@@ -150,6 +150,9 @@ export default function App() {
       'Retrospettiva inevitabile.',
       'Il PM ha sottovalutato la complessità.',
       'Stakeholder management da rivedere.',
+      '"In 10 minuti finisci" non ha funzionato',
+      'Galli ha aperto un problem',
+      'Il PM non ha letto le analisi'
     ]
 
     if (!projectManager) {
@@ -169,6 +172,25 @@ export default function App() {
     const randomPhrase = phrases[Math.floor(Math.random() * phrases.length)]
     setPmMessage(randomPhrase)
 
+    setTimeout(() => {
+      setPmMessage('')
+    }, 2500)
+  }
+
+  async function redeemProjectManagerPenalty() {
+    if (!projectManager) return
+
+    const currentScore = projectManager.score || 0
+
+    if (currentScore <= 0) return
+
+    await updateDoc(doc(db, 'projectManager', 'main'), {
+      score: increment(-1),
+      updatedAt: serverTimestamp(),
+    })
+
+    setPmMessage('🙏 Il PM ha ottenuto una redenzione.')
+    
     setTimeout(() => {
       setPmMessage('')
     }, 2500)
@@ -303,9 +325,21 @@ export default function App() {
             <strong className="pm-score">{projectManager?.score || 0}</strong>
           </div>
 
-          <button className="pm-penalty-button" onClick={addProjectManagerPenalty}>
-            🔥 Colpa del PM
-          </button>
+          <div className="pm-actions">
+            <button
+              className="pm-penalty-button"
+              onClick={addProjectManagerPenalty}
+            >
+              🔥 Colpa del PM
+            </button>
+
+            <button
+              className="pm-redeem-button"
+              onClick={redeemProjectManagerPenalty}
+            >
+              🙏 Redenzione PM
+            </button>
+          </div>
 
           {pmMessage && <p className="pm-message">{pmMessage}</p>}
         </section>
@@ -316,15 +350,17 @@ export default function App() {
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <h2>Regole del gioco</h2>
             <p>
-              Ogni volta che un partecipante fa arrabbiare il Project Manager,
-              riceve una bestemmia.
+              Ogni bug in produzione, requisito ambiguo o call infinita
+              può causare una bestemmia certificata.
             </p>
             <p>
-              I pulsanti + e - servono per aumentare o diminuire il punteggio.
+              Il Project Manager non è immune:
+              planning troppo ottimistici e stime di 5 minuti
+              possono ritorcersi contro.            
             </p>
             <p>
-              La classifica mostra in alto chi ha accumulato più bestemmie.
-            </p>
+              La classifica determina chi è più vicino
+              al burnout tecnico settimanale.            </p>
             <button onClick={() => setShowInfo(false)}>Chiudi</button>
           </div>
         </div>
