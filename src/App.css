@@ -44,8 +44,9 @@ button:active {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: 180px;
-  margin-bottom: 12px;
+  min-height: 110px;
+  padding-top: 5px;
+  margin-bottom: 0;
   animation: fadeUp 0.45s ease both;
 }
 
@@ -410,20 +411,18 @@ button:active {
 
   .hero {
     min-height: 150px;
-    padding-top: 56px;
-  }
-
-  .hero-logo {
-    width: 108%;
-    max-width: none;
   }
 
   .info-button {
     top: 12px;
-    right: 14px;
-    padding: 10px 14px;
-    font-size: 16px;
-    z-index: 80;
+    right: 12px;
+    padding: 10px;
+    border-radius: 60%;
+    font-size: 0;
+  }
+
+  .info-button svg {
+    margin: 0;
   }
 
   .dashboard {
