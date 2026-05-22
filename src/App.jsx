@@ -99,6 +99,7 @@ export default function App() {
   }
 
   async function addPenalty(playerId) {
+    triggerBestemmiaEffect()
     await updateDoc(doc(db, 'players', playerId), {
       score: increment(1),
       updatedAt: serverTimestamp(),
@@ -106,6 +107,7 @@ export default function App() {
   }
 
   async function removePenalty(player) {
+    triggerRedemptionEffect()
     if ((player.score || 0) <= 0) return
 
     await updateDoc(doc(db, 'players', player.id), {
@@ -125,6 +127,39 @@ export default function App() {
     return name?.charAt(0)?.toUpperCase() || '?'
   }
 
+  function triggerEmojiExplosion(items) {
+    const container = document.createElement('div')
+    container.className = 'emoji-fireworks'
+    document.body.appendChild(container)
+
+    for (let i = 0; i < 35; i++) {
+      const emoji = document.createElement('span')
+      emoji.className = 'emoji-particle'
+      emoji.textContent = items[Math.floor(Math.random() * items.length)]
+
+      emoji.style.left = `${Math.random() * 100}vw`
+      emoji.style.top = `${Math.random() * 100}vh`
+      emoji.style.setProperty('--x', `${(Math.random() - 0.5) * 260}px`)
+      emoji.style.setProperty('--y', `${(Math.random() - 0.5) * 260}px`)
+      emoji.style.setProperty('--r', `${Math.random() * 720 - 360}deg`)
+      emoji.style.animationDelay = `${Math.random() * 0.2}s`
+
+      container.appendChild(emoji)
+    }
+
+    setTimeout(() => {
+      container.remove()
+    }, 2200)
+  }
+
+  function triggerBestemmiaEffect() {
+    triggerEmojiExplosion(['✝️', '🔥'])
+  }
+
+  function triggerRedemptionEffect() {
+    triggerEmojiExplosion(['🙏', '🕊️'])
+  }
+  
   async function saveProjectManager(event) {
     event.preventDefault()
 
@@ -144,15 +179,16 @@ export default function App() {
   }
 
   async function addProjectManagerPenalty() {
+    triggerBestemmiaEffect()
     const phrases = [
       'Planning troppo ottimistico.',
       'Scope creep detected.',
       'Retrospettiva inevitabile.',
       'Il PM ha sottovalutato la complessità.',
       'Stakeholder management da rivedere.',
-      '"In 10 minuti finisci" non ha funzionato',
-      'Galli ha aperto un problem',
-      'Il PM non ha letto le analisi'
+      '"In 10 minuti finisci" non ha funzionato.',
+      'Galli ha aperto un problem.',
+      'Il PM non ha letto le analisi.'
     ]
 
     if (!projectManager) {
@@ -178,6 +214,8 @@ export default function App() {
   }
 
   async function redeemProjectManagerPenalty() {
+    triggerRedemptionEffect()
+
     if (!projectManager) return
 
     const currentScore = projectManager.score || 0
