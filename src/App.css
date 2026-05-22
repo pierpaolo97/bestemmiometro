@@ -13,8 +13,52 @@ body {
 }
 
 button,
-input {
-  font: inherit;
+.menu a,
+.player-card,
+.ranking-row {
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+button:hover,
+.menu a:hover {
+  transform: translateY(-2px);
+}
+
+button:active,
+.menu a:active {
+  transform: scale(0.94);
+}
+
+.player-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 18px 40px rgba(23, 32, 51, 0.14);
+}
+
+.ranking-row:hover {
+  transform: scale(1.01);
+}
+
+.round-button:hover {
+  box-shadow: 0 10px 24px rgba(23, 32, 51, 0.18);
+}
+
+.round-button.primary:hover {
+  background: #2f3f68;
+}
+
+.round-button.danger:hover {
+  background: #ffd0d0;
+}
+
+.error-message {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #ffe8e8;
+  color: #b42318;
+  font-weight: 700;
 }
 
 .app {
@@ -33,6 +77,32 @@ input {
   background: linear-gradient(135deg, #172033, #3a4b75);
   color: white;
   box-shadow: 0 20px 50px rgba(23, 32, 51, 0.22);
+}
+
+.hero,
+.menu,
+.panel {
+  animation: fadeUp 0.45s ease both;
+}
+
+.panel:nth-of-type(2) {
+  animation-delay: 0.08s;
+}
+
+.panel:nth-of-type(3) {
+  animation-delay: 0.16s;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .eyebrow {
@@ -174,6 +244,24 @@ h1 {
   color: #172033;
   display: grid;
   place-items: center;
+}
+
+.round-button:active {
+  animation: pulseClick 0.22s ease;
+}
+
+@keyframes pulseClick {
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(0.86);
+  }
+
+  100% {
+    transform: scale(1);
+  }
 }
 
 .round-button.primary {
