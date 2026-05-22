@@ -420,6 +420,17 @@ button:active {
   .add-form {
     flex-direction: column;
   }
+  .ranking-panel {
+  order: 1;
+  }
+
+  .players-panel {
+    order: 2;
+  }
+
+  .pm-panel {
+    order: 3;
+  }
 }
 
 .pm-panel {
