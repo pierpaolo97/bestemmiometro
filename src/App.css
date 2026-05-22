@@ -1,0 +1,250 @@
+:root {
+  font-family: Inter, system-ui, Arial, sans-serif;
+  color: #172033;
+  background: #f4f6fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app {
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  padding: 32px;
+  border-radius: 28px;
+  background: linear-gradient(135deg, #172033, #3a4b75);
+  color: white;
+  box-shadow: 0 20px 50px rgba(23, 32, 51, 0.22);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(36px, 8vw, 72px);
+  line-height: 0.9;
+}
+
+.subtitle {
+  max-width: 680px;
+  font-size: 18px;
+  opacity: 0.88;
+}
+
+.info-button,
+.add-form button,
+.modal button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 18px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.info-button {
+  background: white;
+  color: #172033;
+}
+
+.menu {
+  display: flex;
+  gap: 12px;
+  margin: 22px 0;
+  overflow-x: auto;
+}
+
+.menu a {
+  color: #172033;
+  text-decoration: none;
+  background: white;
+  border-radius: 999px;
+  padding: 12px 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 10px 30px rgba(23, 32, 51, 0.08);
+  font-weight: 700;
+}
+
+.panel {
+  margin: 22px 0;
+  padding: 24px;
+  background: white;
+  border-radius: 28px;
+  box-shadow: 0 10px 30px rgba(23, 32, 51, 0.08);
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-title h2,
+.panel h2 {
+  margin: 0 0 18px;
+}
+
+.ranking-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ranking-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: #f4f6fb;
+  border-radius: 18px;
+}
+
+.rank-position {
+  font-size: 24px;
+}
+
+.rank-name {
+  font-weight: 800;
+}
+
+.players-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.player-card {
+  padding: 18px;
+  border: 1px solid #e3e7f2;
+  border-radius: 24px;
+  display: grid;
+  gap: 16px;
+}
+
+.player-card h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.player-card p {
+  margin: 6px 0 0;
+  color: #667085;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.round-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 0;
+  cursor: pointer;
+  background: #eef1f8;
+  color: #172033;
+  display: grid;
+  place-items: center;
+}
+
+.round-button.primary {
+  background: #172033;
+  color: white;
+}
+
+.round-button.danger {
+  background: #ffe8e8;
+  color: #b42318;
+}
+
+.add-form {
+  display: flex;
+  gap: 12px;
+}
+
+.add-form input {
+  flex: 1;
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  padding: 14px 18px;
+  outline: none;
+}
+
+.add-form button {
+  background: #172033;
+  color: white;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 32, 51, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modal {
+  width: min(520px, 100%);
+  background: white;
+  padding: 28px;
+  border-radius: 28px;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.25);
+}
+
+.modal h2 {
+  margin-top: 0;
+}
+
+.modal button {
+  background: #172033;
+  color: white;
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: 14px;
+  }
+
+  .hero {
+    flex-direction: column;
+    padding: 24px;
+  }
+
+  .add-form {
+    flex-direction: column;
+  }
+
+  .add-form button {
+    justify-content: center;
+  }
+}
