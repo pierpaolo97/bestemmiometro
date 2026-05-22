@@ -10,6 +10,7 @@ import {
   serverTimestamp,
   updateDoc,
   increment,
+  setDoc,
 } from 'firebase/firestore'
 import { db } from './firebase'
 import { Info, Plus, Minus, Trash2, Trophy, Users, UserPlus } from 'lucide-react'
@@ -21,6 +22,9 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [projectManager, setProjectManager] = useState(null)
+  const [pmName, setPmName] = useState('')
+  const [pmMessage, setPmMessage] = useState('')
 
   useEffect(() => {
     const q = query(collection(db, 'players'), orderBy('createdAt', 'asc'))
@@ -40,6 +44,34 @@ export default function App() {
         console.error('Errore Firestore:', error)
         setError(error.message)
         setLoading(false)
+      }
+    )
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    const pmRef = doc(db, 'projectManager', 'main')
+
+    const unsubscribe = onSnapshot(
+      pmRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data()
+
+          setProjectManager({
+            id: snapshot.id,
+            ...data,
+          })
+
+          setPmName(data.name || '')
+        } else {
+          setProjectManager(null)
+        }
+      },
+      (error) => {
+        console.error('Errore Project Manager:', error)
+        setError(error.message)
       }
     )
 
@@ -93,6 +125,55 @@ export default function App() {
     return name?.charAt(0)?.toUpperCase() || '?'
   }
 
+  async function saveProjectManager(event) {
+    event.preventDefault()
+
+    const cleanName = pmName.trim()
+    if (!cleanName) return
+
+    await setDoc(
+      doc(db, 'projectManager', 'main'),
+      {
+        name: cleanName,
+        score: projectManager?.score || 0,
+        updatedAt: serverTimestamp(),
+        createdAt: projectManager?.createdAt || serverTimestamp(),
+      },
+      { merge: true }
+    )
+  }
+
+  async function addProjectManagerPenalty() {
+    const phrases = [
+      'Planning troppo ottimistico.',
+      'Scope creep detected.',
+      'Retrospettiva inevitabile.',
+      'Il PM ha sottovalutato la complessità.',
+      'Stakeholder management da rivedere.',
+    ]
+
+    if (!projectManager) {
+      await setDoc(doc(db, 'projectManager', 'main'), {
+        name: pmName.trim() || 'Project Manager',
+        score: 1,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    } else {
+      await updateDoc(doc(db, 'projectManager', 'main'), {
+        score: increment(1),
+        updatedAt: serverTimestamp(),
+      })
+    }
+
+    const randomPhrase = phrases[Math.floor(Math.random() * phrases.length)]
+    setPmMessage(randomPhrase)
+
+    setTimeout(() => {
+      setPmMessage('')
+    }, 2500)
+  }
+
   return (
     <main className="app">
       <header className="hero">
@@ -143,7 +224,7 @@ export default function App() {
 
                     <div>
                       <h3>{player.name}</h3>
-                      <p>{player.score || 0} penitenze</p>
+                      <p>{player.score || 0} bestemmie</p>
                     </div>
                   </div>
 
@@ -194,6 +275,40 @@ export default function App() {
             </div>
           )}
         </section>
+
+        <section className="panel pm-panel">
+          <div className="panel-title pm-title">
+            <span className="pm-crown">👑</span>
+            <h2>Project Manager</h2>
+          </div>
+
+          <form onSubmit={saveProjectManager} className="pm-form">
+            <input
+              type="text"
+              placeholder="Nome Project Manager"
+              value={pmName}
+              onChange={(event) => setPmName(event.target.value)}
+            />
+
+            <button type="submit">Salva PM</button>
+          </form>
+
+          <div className="pm-card">
+            <div>
+              <p className="pm-label">Responsabilità manageriali</p>
+              <h3>{projectManager?.name || 'Project Manager'}</h3>
+              <p>{projectManager?.score || 0} bestemmie PM</p>
+            </div>
+
+            <strong className="pm-score">{projectManager?.score || 0}</strong>
+          </div>
+
+          <button className="pm-penalty-button" onClick={addProjectManagerPenalty}>
+            🔥 Colpa del PM
+          </button>
+
+          {pmMessage && <p className="pm-message">{pmMessage}</p>}
+        </section>
       </section>
 
       {showInfo && (
@@ -202,13 +317,13 @@ export default function App() {
             <h2>Regole del gioco</h2>
             <p>
               Ogni volta che un partecipante fa arrabbiare il Project Manager,
-              riceve una penitenza.
+              riceve una bestemmia.
             </p>
             <p>
               I pulsanti + e - servono per aumentare o diminuire il punteggio.
             </p>
             <p>
-              La classifica mostra in alto chi ha accumulato più penitenze.
+              La classifica mostra in alto chi ha accumulato più bestemmie.
             </p>
             <button onClick={() => setShowInfo(false)}>Chiudi</button>
           </div>
