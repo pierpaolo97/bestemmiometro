@@ -409,12 +409,21 @@ button:active {
   }
 
   .hero {
-    min-height: 120px;
+    min-height: 150px;
+    padding-top: 56px;
+  }
+
+  .hero-logo {
+    width: 108%;
+    max-width: none;
   }
 
   .info-button {
     top: 12px;
-    right: 12px;
+    right: 14px;
+    padding: 10px 14px;
+    font-size: 16px;
+    z-index: 80;
   }
 
   .dashboard {
