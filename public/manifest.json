@@ -1,0 +1,20 @@
+{
+  "name": "Bestemmiometro",
+  "short_name": "Bestemmio",
+  "start_url": "/bestemmiometro/",
+  "display": "standalone",
+  "background_color": "#fdf8ee",
+  "theme_color": "#e6c290",
+  "icons": [
+    {
+      "src": "/bestemmiometro/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/bestemmiometro/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
