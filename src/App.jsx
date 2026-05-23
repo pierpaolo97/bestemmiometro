@@ -427,7 +427,28 @@ export default function App() {
 
         </section>
       </section>
+        <section className="donation-panel">
+          <div className="donation-content">
+            <div>
+              <p className="donation-label">
+                Ogni bestemmia ha un costo.
+              </p>
+              <p className="donation-text">
+                Ogni penitenza contribuisce alla cassa comune.
+              </p>
+            </div>
 
+            <a
+              className="paypal-button"
+              href="https://paypal.me/TUO_LINK"
+              target="_blank"
+              rel="noreferrer"
+            >
+              💸 Dona su PayPal
+            </a>
+          </div>
+        </section>
+        
       {showInfo && (
         <div className="modal-backdrop" onClick={() => setShowInfo(false)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
