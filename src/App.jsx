@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   collection,
   addDoc,
@@ -24,7 +24,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [projectManager, setProjectManager] = useState(null)
   const [pmName, setPmName] = useState('')
-  const [pmMessage, setPmMessage] = useState('')
+  const [toast, setToast] = useState(null)
+  const toastTimeoutRef = useRef(null)
 
   useEffect(() => {
     const q = query(collection(db, 'players'), orderBy('createdAt', 'asc'))
@@ -98,17 +99,50 @@ export default function App() {
     setNewPlayerName('')
   }
 
-  async function addPenalty(playerId) {
+  async function addPenalty(player) {
     triggerBestemmiaEffect()
-    await updateDoc(doc(db, 'players', playerId), {
+
+    const randomMessages = [
+      `${player.name} non ha letto l’analisi.`,
+      `${player.name} ha saltato i regression test.`,
+      `${player.name} ha deployato senza verifiche.`,
+      `${player.name} ha detto “funziona in locale”.`,
+      `${player.name} ha aperto un bug in produzione.`,
+      `${player.name} ha sottovalutato il task.`,
+      `${player.name} ha ignorato un edge case.`,
+      `${player.name} ha fatto merge direttamente su main.`,
+      `${player.name} ha rotto la cassa.`,
+      `${player.name} ha chiuso il ticket senza fix.`,
+    ]
+
+    const randomMessage =
+      randomMessages[Math.floor(Math.random() * randomMessages.length)]
+
+    showToast(`🔥 ${randomMessage}`, 'danger')
+
+    await updateDoc(doc(db, 'players', player.id), {
       score: increment(1),
       updatedAt: serverTimestamp(),
     })
   }
 
   async function removePenalty(player) {
-    triggerRedemptionEffect()
     if ((player.score || 0) <= 0) return
+
+    triggerRedemptionEffect()
+
+    const redemptionMessages = [
+      `${player.name} ha finalmente letto il log.`,
+      `${player.name} ha fixato il bug.`,
+      `${player.name} ha fatto i test.`,
+      `${player.name} ha trovato la root cause.`,
+      `${player.name} ha evitato un hotfix.`,
+    ]
+
+    const randomMessage =
+      redemptionMessages[Math.floor(Math.random() * redemptionMessages.length)]
+
+    showToast(`🙏 ${randomMessage}`, 'success')
 
     await updateDoc(doc(db, 'players', player.id), {
       score: increment(-1),
@@ -152,6 +186,18 @@ export default function App() {
     }, 2200)
   }
 
+  function showToast(message, type = 'danger') {
+    setToast({ message, type })
+
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current)
+    }
+
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null)
+    }, 2700)
+  }
+
   function triggerBestemmiaEffect() {
     triggerEmojiExplosion(['✝️', '🔥'])
   }
@@ -180,16 +226,23 @@ export default function App() {
 
   async function addProjectManagerPenalty() {
     triggerBestemmiaEffect()
+
     const phrases = [
       'Planning troppo ottimistico.',
+      'Analisi funzionale poco chiara.',
       'Scope creep detected.',
       'Retrospettiva inevitabile.',
       'Il PM ha sottovalutato la complessità.',
       'Stakeholder management da rivedere.',
       '"In 10 minuti finisci" non ha funzionato.',
-      'Galli ha aperto un problem.',
-      'Il PM non ha letto le analisi.'
+      'Rilascio pianificato di venerdì.',
+      'Hanno aperto un problem.',
+      'Il PM non ha letto le analisi.',
     ]
+
+    const randomPhrase = phrases[Math.floor(Math.random() * phrases.length)]
+
+    showToast(`🔥 ${randomPhrase}`, 'danger')
 
     if (!projectManager) {
       await setDoc(doc(db, 'projectManager', 'main'), {
@@ -204,38 +257,32 @@ export default function App() {
         updatedAt: serverTimestamp(),
       })
     }
-
-    const randomPhrase = phrases[Math.floor(Math.random() * phrases.length)]
-    setPmMessage(randomPhrase)
-
-    setTimeout(() => {
-      setPmMessage('')
-    }, 2500)
   }
 
   async function redeemProjectManagerPenalty() {
-    triggerRedemptionEffect()
-
     if (!projectManager) return
 
     const currentScore = projectManager.score || 0
 
     if (currentScore <= 0) return
 
+    triggerRedemptionEffect()
+
     await updateDoc(doc(db, 'projectManager', 'main'), {
       score: increment(-1),
       updatedAt: serverTimestamp(),
     })
 
-    setPmMessage('🙏 Il PM ha ottenuto una redenzione.')
-    
-    setTimeout(() => {
-      setPmMessage('')
-    }, 2500)
+    showToast('🙏 Il PM ha ottenuto una redenzione.', 'success')
   }
 
   return (
     <main className="app">
+      {toast && (
+        <div className={`toast toast-${toast.type}`}>
+          {toast.message}
+        </div>
+      )}
       <header className="hero">
         <img
           className="hero-logo"
@@ -295,7 +342,7 @@ export default function App() {
                       <Minus size={18} />
                     </button>
 
-                    <button onClick={() => addPenalty(player.id)} className="round-button primary">
+                    <button onClick={() => addPenalty(player)} className="round-button primary">
                       <Plus size={18} />
                     </button>
 
@@ -379,7 +426,6 @@ export default function App() {
             </button>
           </div>
 
-          {pmMessage && <p className="pm-message">{pmMessage}</p>}
         </section>
       </section>
 
