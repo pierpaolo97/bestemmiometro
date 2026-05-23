@@ -694,9 +694,13 @@ button:active {
 
 @media (max-width: 820px) {
   .toast {
-    width: fit-content;
-    max-width: min(96vw, 520px);
+    top: 18px;
+    width: max-content;
+    max-width: calc(100vw - 24px);
+    padding: 12px 18px;
+    font-size: 15px;
+    line-height: 1.15;
     white-space: normal;
-    text-wrap: balance;
+    text-wrap: normal;
   }
 }
