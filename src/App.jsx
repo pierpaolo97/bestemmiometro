@@ -109,7 +109,6 @@ export default function App() {
       `${player.name} ha detto “funziona in locale”.`,
       `${player.name} ha aperto un bug in produzione.`,
       `${player.name} ha sottovalutato il task.`,
-      `${player.name} ha ignorato un edge case.`,
       `${player.name} ha fatto merge direttamente su main.`,
       `${player.name} ha rotto la cassa.`,
       `${player.name} ha chiuso il ticket senza fix.`,
@@ -133,6 +132,7 @@ export default function App() {
 
     const redemptionMessages = [
       `${player.name} ha finalmente letto il log.`,
+      `${player.name} ha finalmente letto l'analisi.`,
       `${player.name} ha fixato il bug.`,
       `${player.name} ha fatto i test.`,
       `${player.name} ha trovato la root cause.`,
@@ -176,7 +176,7 @@ export default function App() {
       emoji.style.setProperty('--x', `${(Math.random() - 0.5) * 260}px`)
       emoji.style.setProperty('--y', `${(Math.random() - 0.5) * 260}px`)
       emoji.style.setProperty('--r', `${Math.random() * 720 - 360}deg`)
-      emoji.style.animationDelay = `${Math.random() * 0.2}s`
+      emoji.style.animationDelay = `0s`
 
       container.appendChild(emoji)
     }
@@ -230,7 +230,6 @@ export default function App() {
     const phrases = [
       'Planning troppo ottimistico.',
       'Analisi funzionale poco chiara.',
-      'Scope creep detected.',
       'Retrospettiva inevitabile.',
       'Il PM ha sottovalutato la complessità.',
       'Stakeholder management da rivedere.',
