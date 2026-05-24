@@ -11,9 +11,11 @@ import {
   updateDoc,
   increment,
   setDoc,
+  where,
+  getDocs,
 } from 'firebase/firestore'
 import { db } from './firebase'
-import { Info, Plus, Minus, Trash2, Trophy, Users, UserPlus } from 'lucide-react'
+import { Info, Plus, Minus, Trash2, Trophy, Users, UserPlus, X, } from 'lucide-react'
 import './App.css'
 
 export default function App() {
@@ -26,6 +28,11 @@ export default function App() {
   const [pmName, setPmName] = useState('')
   const [toast, setToast] = useState(null)
   const toastTimeoutRef = useRef(null)
+  const [penaltyModal, setPenaltyModal] = useState(null)
+  const [penaltyDescription, setPenaltyDescription] = useState('')
+  const [historyModal, setHistoryModal] = useState(null)
+  const [selectedPenalties, setSelectedPenalties] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   useEffect(() => {
     const q = query(collection(db, 'players'), orderBy('createdAt', 'asc'))
@@ -99,55 +106,103 @@ export default function App() {
     setNewPlayerName('')
   }
 
-  async function addPenalty(player) {
-    triggerBestemmiaEffect()
-
-    const randomMessages = [
-      `${player.name} non ha letto l’analisi.`,
-      `${player.name} ha saltato i regression test.`,
-      `${player.name} ha deployato senza verifiche.`,
-      `${player.name} ha detto “funziona in locale”.`,
-      `${player.name} ha aperto un bug in produzione.`,
-      `${player.name} ha sottovalutato il task.`,
-      `${player.name} ha fatto merge direttamente su main.`,
-      `${player.name} ha rotto la cassa.`,
-      `${player.name} ha chiuso il ticket senza fix.`,
-    ]
-
-    const randomMessage =
-      randomMessages[Math.floor(Math.random() * randomMessages.length)]
-
-    showToast(`🔥 ${randomMessage}`, 'danger')
-
-    await updateDoc(doc(db, 'players', player.id), {
-      score: increment(1),
-      updatedAt: serverTimestamp(),
-    })
+  function openAddPenaltyModal(target) {
+    setPenaltyDescription('')
+    setPenaltyModal(target)
   }
 
-  async function removePenalty(player) {
-    if ((player.score || 0) <= 0) return
+  async function confirmAddPenalty(event) {
+    event.preventDefault()
+
+    const description = penaltyDescription.trim()
+    if (!description || !penaltyModal) return
+
+    const isPm = penaltyModal.type === 'pm'
+
+    await addDoc(collection(db, 'penalties'), {
+      targetId: penaltyModal.id,
+      targetName: penaltyModal.name,
+      targetType: isPm ? 'pm' : 'player',
+      description,
+      createdAt: serverTimestamp(),
+    })
+
+    if (isPm) {
+      const pmRef = doc(db, 'projectManager', 'main')
+
+      if (!projectManager) {
+        await setDoc(pmRef, {
+          name: penaltyModal.name || 'Project Manager',
+          score: 1,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+      } else {
+        await updateDoc(pmRef, {
+          score: increment(1),
+          updatedAt: serverTimestamp(),
+        })
+      }
+    } else {
+      await updateDoc(doc(db, 'players', penaltyModal.id), {
+        score: increment(1),
+        updatedAt: serverTimestamp(),
+      })
+    }
+
+    triggerBestemmiaEffect()
+    showToast(`🔥 ${penaltyModal.name}: ${description}`, 'danger')
+
+    setPenaltyModal(null)
+    setPenaltyDescription('')
+  }
+
+  async function openHistoryModal(target) {
+    setHistoryModal(target)
+    setHistoryLoading(true)
+
+    const q = query(
+      collection(db, 'penalties'),
+      where('targetId', '==', target.id),
+      where('targetType', '==', target.type),
+      orderBy('createdAt', 'desc')
+    )
+
+    const snapshot = await getDocs(q)
+
+    const data = snapshot.docs.map((document) => ({
+      id: document.id,
+      ...document.data(),
+    }))
+
+    setSelectedPenalties(data)
+    setHistoryLoading(false)
+  }
+
+  async function deletePenalty(penalty) {
+    const confirmed = window.confirm('Vuoi davvero eliminare questa bestemmia?')
+    if (!confirmed) return
+
+    await deleteDoc(doc(db, 'penalties', penalty.id))
+
+    if (penalty.targetType === 'pm') {
+      await updateDoc(doc(db, 'projectManager', 'main'), {
+        score: increment(-1),
+        updatedAt: serverTimestamp(),
+      })
+    } else {
+      await updateDoc(doc(db, 'players', penalty.targetId), {
+        score: increment(-1),
+        updatedAt: serverTimestamp(),
+      })
+    }
 
     triggerRedemptionEffect()
+    showToast(`🙏 Bestemmia rimossa: ${penalty.description}`, 'success')
 
-    const redemptionMessages = [
-      `${player.name} ha finalmente letto il log.`,
-      `${player.name} ha finalmente letto l'analisi.`,
-      `${player.name} ha fixato il bug.`,
-      `${player.name} ha fatto i test.`,
-      `${player.name} ha trovato la root cause.`,
-      `${player.name} ha evitato un hotfix.`,
-    ]
-
-    const randomMessage =
-      redemptionMessages[Math.floor(Math.random() * redemptionMessages.length)]
-
-    showToast(`🙏 ${randomMessage}`, 'success')
-
-    await updateDoc(doc(db, 'players', player.id), {
-      score: increment(-1),
-      updatedAt: serverTimestamp(),
-    })
+    setSelectedPenalties((current) =>
+      current.filter((item) => item.id !== penalty.id)
+    )
   }
 
   async function removePlayer(player) {
@@ -183,7 +238,7 @@ export default function App() {
 
     setTimeout(() => {
       container.remove()
-    }, 2200)
+    }, 2500)
   }
 
   function showToast(message, type = 'danger') {
@@ -337,11 +392,11 @@ export default function App() {
                   <strong className="score">{player.score || 0}</strong>
 
                   <div className="actions">
-                    <button onClick={() => removePenalty(player)} className="round-button minus">
+                    <button onClick={() => openHistoryModal({ id: player.id, name: player.name, type: 'player', })} className="round-button minus">
                       <Minus size={18} />
                     </button>
 
-                    <button onClick={() => addPenalty(player)} className="round-button primary">
+                    <button onClick={() => openAddPenaltyModal({ id: player.id, name: player.name, type: 'player' })} className="round-button primary">
                       <Plus size={18} />
                     </button>
 
@@ -358,7 +413,10 @@ export default function App() {
         <section id="classifica" className="panel ranking-panel">
           <div className="panel-title">
             <Trophy />
-            <h2>Classifica</h2>
+            <div>
+              <h2>Classifica</h2>
+              <p className="panel-subtitle"> Clicca su un giocatore per vedere le bestemmie</p>
+            </div>
           </div>
 
           {loading ? (
@@ -370,13 +428,23 @@ export default function App() {
           ) : (
             <div className="ranking-list">
               {ranking.map((player, index) => (
-                <div className="ranking-row" key={player.id}>
+                  <button
+                    className="ranking-row"
+                    key={player.id}
+                    onClick={() =>
+                      openHistoryModal({
+                        id: player.id,
+                        name: player.name,
+                        type: 'player',
+                      })
+                    }
+                  >                  
                   <span className={`rank-position rank-${index + 1}`}>
                     {index + 1}
                   </span>
                   <span className="rank-name">{player.name}</span>
                   <strong>{player.score || 0}</strong>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -412,14 +480,14 @@ export default function App() {
           <div className="pm-actions">
             <button
               className="pm-penalty-button"
-              onClick={addProjectManagerPenalty}
+              onClick={() =>  openAddPenaltyModal({id: 'main', name: projectManager?.name || pmName || 'Project Manager', type: 'pm', })}
             >
               🔥 Colpa del PM
             </button>
 
             <button
               className="pm-redeem-button"
-              onClick={redeemProjectManagerPenalty}
+              onClick={() =>  openHistoryModal({id: 'main', name: projectManager?.name || pmName || 'Project Manager', type: 'pm', })}
             >
               🙏 Redenzione PM
             </button>
@@ -448,6 +516,77 @@ export default function App() {
             </a>
           </div>
         </section>
+        {penaltyModal && (
+
+        <div className="modal-backdrop" onClick={() => setPenaltyModal(null)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Aggiungi bestemmia</h2>
+
+            <p>
+              Movente per <strong>{penaltyModal.name}</strong>
+            </p>
+
+            <form onSubmit={confirmAddPenalty} className="penalty-form">
+              <textarea
+                placeholder="Es. Non ha letto l'analisi"
+                value={penaltyDescription}
+                onChange={(event) => setPenaltyDescription(event.target.value)}
+                autoFocus
+              />
+
+              <div className="modal-actions">
+                <button type="button" onClick={() => setPenaltyModal(null)}>
+                  Annulla
+                </button>
+
+                <button type="submit" disabled={!penaltyDescription.trim()}>
+                  Conferma
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {historyModal && (
+        <div className="modal-backdrop" onClick={() => setHistoryModal(null)}>
+          <div className="modal history-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setHistoryModal(null)}>
+              <X /> 
+            </button>
+
+            <h2>Bestemmie di {historyModal.name}</h2>
+
+            {historyLoading ? (
+              <p>Caricamento storico...</p>
+            ) : selectedPenalties.length === 0 ? (
+              <p>Nessuna bestemmia registrata.</p>
+            ) : (
+              <div className="penalty-history-list">
+                {selectedPenalties.map((penalty) => (
+                  <div className="penalty-history-item" key={penalty.id}>
+                    <div>
+                      <p>{penalty.description}</p>
+                      <span>
+                        {penalty.createdAt?.toDate
+                          ? penalty.createdAt.toDate().toLocaleDateString('it-IT')
+                          : 'Data non disponibile'}
+                      </span>
+                    </div>
+
+                    <button
+                      className="history-delete-button"
+                      onClick={() => deletePenalty(penalty)}
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}      
         
       {showInfo && (
         <div className="modal-backdrop" onClick={() => setShowInfo(false)}>
