@@ -87,8 +87,19 @@ export default function App() {
   }, [])
 
   const ranking = useMemo(() => {
-    return [...players].sort((a, b) => (b.score || 0) - (a.score || 0))
-  }, [players])
+    const allPlayers = [...players]
+
+    if (projectManager) {
+      allPlayers.push({
+        id: 'main',
+        name: `${projectManager.name}`,
+        score: projectManager.score || 0,
+        type: 'pm',
+      })
+    }
+
+    return allPlayers.sort((a, b) => (b.score || 0) - (a.score || 0))
+  }, [players, projectManager])
 
   async function addPlayer(event) {
     event.preventDefault()
@@ -429,13 +440,17 @@ export default function App() {
             <div className="ranking-list">
               {ranking.map((player, index) => (
                   <button
-                    className="ranking-row"
+                    className={`ranking-row ${
+                      player.type === 'pm'
+                        ? 'pm-ranking'
+                        : ''
+                    }`}
                     key={player.id}
                     onClick={() =>
                       openHistoryModal({
                         id: player.id,
                         name: player.name,
-                        type: 'player',
+                        type: player.type || 'player',
                       })
                     }
                   >                  

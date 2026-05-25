@@ -971,3 +971,12 @@ button:active {
     filter 0.16s ease;
   -webkit-tap-highlight-color: transparent;
 }
+
+.ranking-row.pm-ranking {
+  background:
+    linear-gradient(
+      135deg,
+      #fff1eb,
+      #ffe1d6
+    );
+}
