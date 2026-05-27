@@ -1186,3 +1186,48 @@ button:active {
     width: 100%;
   }
 }
+
+.add-penalty-panel {
+  background:
+    linear-gradient(
+      135deg,
+      #ffe5d9,
+      #ffd2bf
+    );
+
+  border: 1px solid #fecdd3;
+  animation: fadeUp 0.45s ease both;
+  box-shadow:
+    0 14px 34px rgba(103, 67, 16, 0.1)
+}
+
+.add-penalty-panel .panel-title {
+  color: #dc2626;
+}
+
+.add-penalty-panel select,
+.add-penalty-panel textarea {
+  border-color: #fecdd3;
+}
+
+.add-penalty-panel select:focus,
+.add-penalty-panel textarea:focus {
+  border-color: #ef4444;
+
+  box-shadow:
+    0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+.add-penalty-panel button {
+  color: white;
+
+  background:
+    linear-gradient(
+      135deg,
+      #ef4444,
+      #b91c1c
+    );
+
+  box-shadow:
+    0 14px 28px rgba(185, 28, 28, 0.18);
+}
