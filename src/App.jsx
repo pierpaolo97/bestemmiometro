@@ -368,7 +368,7 @@ async function deletePlayerFromHistory(player) {
 
               {players.map((player) => (
                 <option key={player.id} value={player.id}>
-                  {player.name} - {getRoleLabel(player.role)}
+                  {player.name}
                 </option>
               ))}
             </select>
