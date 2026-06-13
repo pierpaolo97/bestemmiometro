@@ -14,6 +14,8 @@ import {
 import { db } from './firebase'
 import { Info, Plus, Trash2, Trophy, Users, UserPlus, X, LogOut } from 'lucide-react'
 import './App.css'
+import { getToken, onMessage } from 'firebase/messaging'
+import { messaging } from './firebase'
 
 const SESSION_KEY = 'bestemmiometro_user'
 
@@ -49,6 +51,47 @@ export default function App() {
 
   const isMaintainer = currentUser?.accessRole === 'maintainer'
 
+  async function enableNotifications() {
+    try {
+      if (!('Notification' in window)) {
+        showToast('Notifiche non supportate su questo dispositivo.', 'danger')
+        return
+      }
+
+      const permission = await Notification.requestPermission()
+
+      if (permission !== 'granted') {
+        showToast('Permesso notifiche non concesso.', 'danger')
+        return
+      }
+
+      const registration = await navigator.serviceWorker.register(
+        `${import.meta.env.BASE_URL}firebase-messaging-sw.js`
+      )
+
+      const token = await getToken(messaging, {
+        vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
+        serviceWorkerRegistration: registration,
+      })
+
+      if (!token) {
+        showToast('Token notifiche non generato.', 'danger')
+        return
+      }
+
+      await updateDoc(doc(db, 'users', currentUser.id), {
+        notificationToken: token,
+        notificationsEnabled: true,
+        updatedAt: serverTimestamp(),
+      })
+
+      showToast('Notifiche abilitate.', 'success')
+    } catch (error) {
+      console.error('Errore notifiche:', error)
+      showToast('Errore attivazione notifiche.', 'danger')
+    }
+  }
+
   useEffect(() => {
     if (!currentUser?.teamKey) return
 
@@ -82,6 +125,21 @@ export default function App() {
       unsubscribeUsers()
       unsubscribeEvents()
     }
+    }, [currentUser])
+
+    useEffect(() => {
+    if (!currentUser) return
+
+    const unsubscribe = onMessage(messaging, (payload) => {
+      showToast(
+        `${payload.notification?.title || 'Bestemmiometro'} - ${
+          payload.notification?.body || 'Nuovo evento'
+        }`,
+        'danger'
+      )
+    })
+
+    return () => unsubscribe()
   }, [currentUser])
 
   const ranking = useMemo(() => {
@@ -630,13 +688,22 @@ export default function App() {
             </p>
           </div>
 
-          <button
-            className="logout-button"
-            onClick={logout}
-          >
-            <LogOut size={18} />
-            Logout
-          </button>
+          <div className="account-actions">
+            <button
+              className="notification-button"
+              onClick={enableNotifications}
+            >
+              🔔 Notifiche
+            </button>
+
+            <button
+              className="logout-button"
+              onClick={logout}
+            >
+              <LogOut size={18} />
+              Logout
+            </button>
+          </div>
         </div>
       </section>
 
