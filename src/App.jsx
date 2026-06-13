@@ -36,7 +36,6 @@ export default function App() {
   const [newFirstName, setNewFirstName] = useState('')
   const [newLastName, setNewLastName] = useState('')
   const [newUsername, setNewUsername] = useState('')
-  const [newRole, setNewRole] = useState('dev')
   const [newAccessRole, setNewAccessRole] = useState('player')
 
   const [selectedTargetId, setSelectedTargetId] = useState('')
@@ -218,7 +217,7 @@ export default function App() {
       firstName,
       lastName,
       username,
-      role: newRole,
+      role: 'default',
       accessRole: newAccessRole,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -227,7 +226,6 @@ export default function App() {
     setNewFirstName('')
     setNewLastName('')
     setNewUsername('')
-    setNewRole('dev')
     setNewAccessRole('player')
   }
 
@@ -384,15 +382,23 @@ export default function App() {
     return events.filter((event) => event.targetId === userId)
   }
 
+  // function getRoleLabel(role) {
+  //   const labels = {
+  //     dev: 'Sviluppo',
+  //     pm: 'Management',
+  //     qa: 'Quality Assurance',
+  //     analyst: 'Analista funzionale',
+  //   }
+
+  //   return labels[role] || 'Team'
+  // }
+  
   function getRoleLabel(role) {
     const labels = {
-      dev: 'Sviluppo',
-      pm: 'Management',
-      qa: 'Quality Assurance',
-      analyst: 'Analista funzionale',
+      default: 'User',
     }
 
-    return labels[role] || 'Team'
+    return labels[role] || 'User'
   }
 
   function getEventIcon(type) {
@@ -640,12 +646,12 @@ export default function App() {
                 onChange={(event) => setNewUsername(event.target.value)}
               />
 
-              <select value={newRole} onChange={(event) => setNewRole(event.target.value)}>
+              {/* <select value={newRole} onChange={(event) => setNewRole(event.target.value)}>
                 <option value="dev">Sviluppo</option>
                 <option value="pm">Management</option>
                 <option value="qa">Quality Assurance</option>
                 <option value="analyst">Analista funzionale</option>
-              </select>
+              </select> */}
 
               <select
                 value={newAccessRole}
