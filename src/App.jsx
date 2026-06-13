@@ -50,6 +50,7 @@ export default function App() {
   const toastTimeoutRef = useRef(null)
 
   const isMaintainer = currentUser?.accessRole === 'maintainer'
+  const [showNotificationModal, setShowNotificationModal] = useState(false)
 
   async function enableNotifications() {
     try {
@@ -127,7 +128,7 @@ export default function App() {
     }
     }, [currentUser])
 
-    useEffect(() => {
+  useEffect(() => {
     if (!currentUser) return
 
     const unsubscribe = onMessage(messaging, (payload) => {
@@ -140,6 +141,17 @@ export default function App() {
     })
 
     return () => unsubscribe()
+  }, [currentUser])
+
+  useEffect(() => {
+    if (!currentUser) return
+
+    if (
+      Notification.permission !== 'granted' ||
+      !currentUser.notificationsEnabled
+    ) {
+      setShowNotificationModal(true)
+    }
   }, [currentUser])
 
   const ranking = useMemo(() => {
@@ -765,6 +777,42 @@ export default function App() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showNotificationModal && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowNotificationModal(false)}
+        >
+          <div
+            className="modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>🔔 Attiva le notifiche</h2>
+
+            <p>
+              Riceverai notifiche quando vengono assegnate
+              bestemmie, benedizioni e superbestemmie.
+            </p>
+
+            <div className="modal-actions">
+              <button
+                onClick={() => setShowNotificationModal(false)}
+              >
+                Più tardi
+              </button>
+
+              <button
+                onClick={async () => {
+                  await enableNotifications()
+                  setShowNotificationModal(false)
+                }}
+              >
+                Attiva notifiche
+              </button>
+            </div>
           </div>
         </div>
       )}
