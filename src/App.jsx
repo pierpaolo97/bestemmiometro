@@ -4,207 +4,347 @@ import {
   addDoc,
   deleteDoc,
   doc,
+  getDocs,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   updateDoc,
-  increment,
   where,
-  getDocs,
 } from 'firebase/firestore'
 import { db } from './firebase'
-import { Info, Plus, Trash2, Trophy, Users, UserPlus, X } from 'lucide-react'
+import { Info, Plus, Trash2, Trophy, Users, UserPlus, X, LogOut } from 'lucide-react'
 import './App.css'
 
+const SESSION_KEY = 'bestemmiometro_user'
+
 export default function App() {
-  const [players, setPlayers] = useState([])
-  const [newPlayerName, setNewPlayerName] = useState('')
-  const [newPlayerRole, setNewPlayerRole] = useState('dev')
-  const [selectedPlayerId, setSelectedPlayerId] = useState('')
-  const [newPenaltyDescription, setNewPenaltyDescription] = useState('')
+  const [currentUser, setCurrentUser] = useState(() => {
+    const saved = localStorage.getItem(SESSION_KEY)
+    return saved ? JSON.parse(saved) : null
+  })
+
+  const [loginTeamKey, setLoginTeamKey] = useState('')
+  const [loginFirstName, setLoginFirstName] = useState('')
+  const [loginLastName, setLoginLastName] = useState('')
+  const [loginError, setLoginError] = useState('')
+
+  const [users, setUsers] = useState([])
+  const [events, setEvents] = useState([])
+
+  const [newFirstName, setNewFirstName] = useState('')
+  const [newLastName, setNewLastName] = useState('')
+  const [newUsername, setNewUsername] = useState('')
+  const [newRole, setNewRole] = useState('dev')
+  const [newAccessRole, setNewAccessRole] = useState('player')
+
+  const [selectedTargetId, setSelectedTargetId] = useState('')
+  const [selectedEventType, setSelectedEventType] = useState('bestemmia')
+  const [eventDescription, setEventDescription] = useState('')
+
   const [showInfo, setShowInfo] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [toast, setToast] = useState(null)
   const [historyModal, setHistoryModal] = useState(null)
-  const [selectedPenalties, setSelectedPenalties] = useState([])
-  const [historyLoading, setHistoryLoading] = useState(false)
 
   const toastTimeoutRef = useRef(null)
 
+  const isMaintainer = currentUser?.accessRole === 'maintainer'
+
   useEffect(() => {
-    const q = query(collection(db, 'players'), orderBy('createdAt', 'asc'))
+    if (!currentUser?.teamKey) return
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const data = snapshot.docs.map((document) => ({
-          id: document.id,
-          ...document.data(),
-        }))
-
-        setPlayers(data)
-        setLoading(false)
-      },
-      (error) => {
-        console.error('Errore Firestore:', error)
-        setError(error.message)
-        setLoading(false)
-      }
+    const usersQuery = query(
+      collection(db, 'users'),
+      where('teamKey', '==', currentUser.teamKey)
     )
 
-    return () => unsubscribe()
-  }, [])
+    const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
+      const data = snapshot.docs
+        .map((document) => ({ id: document.id, ...document.data() }))
+        .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
+
+      setUsers(data)
+    })
+
+    const eventsQuery = query(
+      collection(db, 'events'),
+      where('teamKey', '==', currentUser.teamKey)
+    )
+
+    const unsubscribeEvents = onSnapshot(eventsQuery, (snapshot) => {
+      const data = snapshot.docs
+        .map((document) => ({ id: document.id, ...document.data() }))
+        .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
+
+      setEvents(data)
+    })
+
+    return () => {
+      unsubscribeUsers()
+      unsubscribeEvents()
+    }
+  }, [currentUser])
 
   const ranking = useMemo(() => {
-    return [...players].sort((a, b) => (b.score || 0) - (a.score || 0))
-  }, [players])
-
-  async function addPlayer(event) {
-    event.preventDefault()
-
-    const cleanName = newPlayerName.trim()
-    if (!cleanName) return
-
-    await addDoc(collection(db, 'players'), {
-      name: cleanName,
-      role: newPlayerRole,
-      score: 0,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    })
-
-    setNewPlayerName('')
-    setNewPlayerRole('dev')
-  }
-
-  async function assignPenalty(event) {
-    event.preventDefault()
-
-    const description = newPenaltyDescription.trim()
-    if (!selectedPlayerId || !description) return
-
-    const selectedPlayer = players.find((player) => player.id === selectedPlayerId)
-    if (!selectedPlayer) return
-
-    await addDoc(collection(db, 'penalties'), {
-      targetId: selectedPlayer.id,
-      targetName: selectedPlayer.name,
-      targetRole: selectedPlayer.role || 'team',
-      targetType: 'player',
-      description,
-      createdAt: serverTimestamp(),
-    })
-
-    await updateDoc(doc(db, 'players', selectedPlayer.id), {
-      score: increment(1),
-      updatedAt: serverTimestamp(),
-    })
-
-    triggerBestemmiaEffect()
-    showToast(`🔥 ${selectedPlayer.name}: ${description}`, 'danger')
-
-    setSelectedPlayerId('')
-    setNewPenaltyDescription('')
-  }
-
-  async function openHistoryModal(target) {
-    setHistoryModal(target)
-    setHistoryLoading(true)
-    setSelectedPenalties([])
-
-    try {
-      const q = query(
-        collection(db, 'penalties'),
-        where('targetId', '==', target.id),
-        where('targetType', '==', 'player'),
-        orderBy('createdAt', 'desc')
-      )
-
-      const snapshot = await getDocs(q)
-
-      const data = snapshot.docs.map((document) => ({
-        id: document.id,
-        ...document.data(),
+    return users
+      .map((user) => ({
+        ...user,
+        score: getUserScore(user.id),
+        blessings: getAvailableBlessings(user.id),
       }))
+      .sort((a, b) => b.score - a.score)
+  }, [users, events])
 
-      setSelectedPenalties(data)
-    } catch (error) {
-      console.error('Errore caricamento storico:', error)
-      showToast(`Errore storico: ${error.message}`, 'danger')
-    } finally {
-      setHistoryLoading(false)
-    }
-  }
+  async function login(event) {
+    event.preventDefault()
+    setLoginError('')
 
-  async function deletePenalty(penalty) {
-    const confirmed = window.confirm('Vuoi davvero eliminare questa bestemmia?')
-    if (!confirmed) return
+    const teamKey = loginTeamKey.trim()
+    const firstName = loginFirstName.trim().toLowerCase()
+    const lastName = loginLastName.trim().toLowerCase()
 
-    await deleteDoc(doc(db, 'penalties', penalty.id))
+    if (!teamKey || !firstName || !lastName) return
 
-    await updateDoc(doc(db, 'players', penalty.targetId), {
-      score: increment(-1),
-      updatedAt: serverTimestamp(),
-    })
-
-    triggerRedemptionEffect()
-    showToast(`🙏 Bestemmia rimossa: ${penalty.description}`, 'success')
-
-    setSelectedPenalties((current) =>
-      current.filter((item) => item.id !== penalty.id)
-    )
-  }
-  
-async function deletePlayerFromHistory(player) {
-  const confirmed = window.confirm(
-    `Vuoi davvero rimuovere ${player.name}?\n\nVerranno eliminate anche tutte le bestemmie associate.`
-  )
-
-  if (!confirmed) return
-
-  try {
-    const q = query(
-      collection(db, 'penalties'),
-      where('targetId', '==', player.id)
-    )
-
+    const q = query(collection(db, 'users'), where('teamKey', '==', teamKey))
     const snapshot = await getDocs(q)
 
-    const deletions = snapshot.docs.map((document) =>
-      deleteDoc(doc(db, 'penalties', document.id))
+    const matchedUser = snapshot.docs
+      .map((document) => ({ id: document.id, ...document.data() }))
+      .find((user) => {
+        return (
+          user.firstName?.toLowerCase() === firstName &&
+          user.lastName?.toLowerCase() === lastName
+        )
+      })
+
+    if (!matchedUser) {
+      setLoginError('Utente non trovato per questo team.')
+      return
+    }
+
+    localStorage.setItem(SESSION_KEY, JSON.stringify(matchedUser))
+    setCurrentUser(matchedUser)
+  }
+
+  function logout() {
+    localStorage.removeItem(SESSION_KEY)
+    setCurrentUser(null)
+    setUsers([])
+    setEvents([])
+  }
+
+  async function addUser(event) {
+    event.preventDefault()
+
+    if (!isMaintainer) return
+
+    const firstName = newFirstName.trim()
+    const lastName = newLastName.trim()
+    const username = newUsername.trim() || firstName
+
+    if (!firstName || !lastName || !username) return
+
+    await addDoc(collection(db, 'users'), {
+      teamKey: currentUser.teamKey,
+      firstName,
+      lastName,
+      username,
+      role: newRole,
+      accessRole: newAccessRole,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+
+    setNewFirstName('')
+    setNewLastName('')
+    setNewUsername('')
+    setNewRole('dev')
+    setNewAccessRole('player')
+  }
+
+  async function addEvent(event) {
+    event.preventDefault()
+
+    const description = eventDescription.trim()
+    const target = users.find((user) => user.id === selectedTargetId)
+
+    if (!target || !description) return
+
+    if (selectedEventType === 'superbestemmia' && getAvailableBlessings(currentUser.id) < 2) {
+      showToast('Ti servono 2 tue benedizioni disponibili per una superbestemmia.', 'danger')
+      return
+    }
+
+    const eventConfig = {
+      bestemmia: {
+        points: 1,
+        icon: '🔥',
+        label: 'Bestemmia',
+      },
+      benedizione: {
+        points: -1,
+        icon: '🙏',
+        label: 'Benedizione',
+      },
+      superbestemmia: {
+        points: 2,
+        icon: '💀',
+        label: 'Superbestemmia',
+      },
+    }
+
+    const config = eventConfig[selectedEventType]
+
+    const createdEvent = await addDoc(collection(db, 'events'), {
+      teamKey: currentUser.teamKey,
+
+      targetId: target.id,
+      targetName: target.username,
+      targetRole: target.role,
+
+      type: selectedEventType,
+      points: config.points,
+      description,
+
+      createdById: currentUser.id,
+      createdByName: currentUser.username,
+
+      paidById: selectedEventType === 'superbestemmia' ? currentUser.id : null,
+      paidByName: selectedEventType === 'superbestemmia' ? currentUser.username : null,
+
+      consumed: false,
+      consumedByEventId: null,
+
+      createdAt: serverTimestamp(),
+    })
+
+    if (selectedEventType === 'superbestemmia') {
+      const availableBlessings = events
+        .filter((item) => item.targetId === currentUser.id)
+        .filter((item) => item.type === 'benedizione')
+        .filter((item) => !item.consumed)
+        .slice(0, 2)
+
+      await Promise.all(
+        availableBlessings.map((blessing) =>
+          updateDoc(doc(db, 'events', blessing.id), {
+            consumed: true,
+            consumedByEventId: createdEvent.id,
+            consumedByUserId: currentUser.id,
+            consumedByUserName: currentUser.username,
+          })
+        )
+      )
+    }
+
+    if (selectedEventType === 'bestemmia' || selectedEventType === 'superbestemmia') {
+      triggerBestemmiaEffect()
+    } else {
+      triggerRedemptionEffect()
+    }
+
+    showToast(`${config.icon} ${target.username}: ${description}`, selectedEventType === 'benedizione' ? 'success' : 'danger')
+
+    setSelectedTargetId('')
+    setSelectedEventType('bestemmia')
+    setEventDescription('')
+  }
+
+  async function deleteEvent(item) {
+    if (!isMaintainer) return
+
+    const confirmed = window.confirm('Vuoi davvero eliminare questo evento?')
+    if (!confirmed) return
+
+    if (item.type === 'superbestemmia') {
+      const consumedBlessings = events.filter(
+        (event) => event.consumedByEventId === item.id
+      )
+
+      await Promise.all(
+        consumedBlessings.map((blessing) =>
+          updateDoc(doc(db, 'events', blessing.id), {
+            consumed: false,
+            consumedByEventId: null,
+          })
+        )
+      )
+    }
+
+    await deleteDoc(doc(db, 'events', item.id))
+
+    showToast('Evento rimosso.', 'success')
+  }
+
+  async function deleteUserFromHistory(user) {
+    if (!isMaintainer) return
+
+    const confirmed = window.confirm(
+      `Vuoi davvero rimuovere ${user.username}? Verranno eliminati anche tutti i suoi eventi.`
     )
 
-    await Promise.all(deletions)
+    if (!confirmed) return
 
-    await deleteDoc(doc(db, 'players', player.id))
+    const userEvents = events.filter((event) => event.targetId === user.id)
 
-    showToast(
-      `🗑️ ${player.name} è stato rimosso`,
-      'success'
+    await Promise.all(
+      userEvents.map((event) => deleteDoc(doc(db, 'events', event.id)))
     )
+
+    await deleteDoc(doc(db, 'users', user.id))
 
     setHistoryModal(null)
-  } catch (error) {
-    console.error(error)
-
-    showToast(
-      'Errore durante la rimozione',
-      'danger'
-    )
+    showToast(`${user.username} rimosso.`, 'success')
   }
-}
+
+  function getUserScore(userId) {
+    return events
+      .filter((event) => event.targetId === userId)
+      .filter((event) => !event.consumed)
+      .reduce((total, event) => total + (event.points || 0), 0)
+  }
+
+  function getAvailableBlessings(userId) {
+    return events
+      .filter((event) => event.targetId === userId)
+      .filter((event) => event.type === 'benedizione')
+      .filter((event) => !event.consumed).length
+  }
+
+  function getUserEvents(userId) {
+    return events.filter((event) => event.targetId === userId)
+  }
 
   function getRoleLabel(role) {
     const labels = {
       dev: 'Sviluppo',
-      pm: 'Project Manager',
+      pm: 'Management',
       qa: 'Quality Assurance',
       analyst: 'Analista funzionale',
     }
 
     return labels[role] || 'Team'
+  }
+
+  function getEventIcon(type) {
+    const icons = {
+      bestemmia: '🔥',
+      benedizione: '🙏',
+      superbestemmia: '💀',
+    }
+
+    return icons[type] || '🔥'
+  }
+
+  function showToast(message, type = 'danger') {
+    setToast({ message, type })
+
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current)
+    }
+
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null)
+    }, 2700)
   }
 
   function triggerEmojiExplosion(items) {
@@ -222,7 +362,6 @@ async function deletePlayerFromHistory(player) {
       emoji.style.setProperty('--x', `${(Math.random() - 0.5) * 260}px`)
       emoji.style.setProperty('--y', `${(Math.random() - 0.5) * 260}px`)
       emoji.style.setProperty('--r', `${Math.random() * 720 - 360}deg`)
-      emoji.style.animationDelay = '0s'
 
       container.appendChild(emoji)
     }
@@ -240,16 +379,45 @@ async function deletePlayerFromHistory(player) {
     triggerEmojiExplosion(['🙏', '🕊️'])
   }
 
-  function showToast(message, type = 'danger') {
-    setToast({ message, type })
+  if (!currentUser) {
+    return (
+      <main className="app login-app">
+        <section className="login-card">
+          <img
+            className="login-logo"
+            src={`${import.meta.env.BASE_URL}images/bestemmiometro-header.PNG`}
+            alt="Bestemmiometro"
+          />
 
-    if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current)
-    }
+          <form onSubmit={login} className="login-form">
+            <input
+              type="text"
+              placeholder="Team key"
+              value={loginTeamKey}
+              onChange={(event) => setLoginTeamKey(event.target.value)}
+            />
 
-    toastTimeoutRef.current = setTimeout(() => {
-      setToast(null)
-    }, 2700)
+            <input
+              type="text"
+              placeholder="Nome"
+              value={loginFirstName}
+              onChange={(event) => setLoginFirstName(event.target.value)}
+            />
+
+            <input
+              type="text"
+              placeholder="Cognome"
+              value={loginLastName}
+              onChange={(event) => setLoginLastName(event.target.value)}
+            />
+
+            {loginError && <p className="error-message">{loginError}</p>}
+
+            <button type="submit">Entra</button>
+          </form>
+        </section>
+      </main>
+    )
   }
 
   return (
@@ -274,122 +442,159 @@ async function deletePlayerFromHistory(player) {
       </header>
 
       <section className="dashboard">
-        <section id="classifica" className="panel ranking-panel">
+        <section className="panel ranking-panel">
           <div className="panel-title">
             <Trophy />
-
             <div>
               <h2>Classifica</h2>
               <p className="panel-subtitle">
-                Clicca su un giocatore per vedere le bestemmie
+                Clicca su un giocatore per vedere lo storico
               </p>
             </div>
           </div>
 
-          {loading ? (
-            <p className="muted">Caricamento dati...</p>
-          ) : error ? (
-            <p className="error-message">Errore database: {error}</p>
-          ) : ranking.length === 0 ? (
-            <p className="muted">Nessun giocatore ancora presente.</p>
-          ) : (
-            <div className="ranking-list">
-              {ranking.map((player, index) => (
-                <button
-                  className={`ranking-row ${player.role || 'team'}`}
-                  key={player.id}
-                  onClick={() =>
-                    openHistoryModal({
-                      id: player.id,
-                      name: player.name,
-                      role: player.role || 'team',
-                    })
-                  }
-                >
-                  <span className={`rank-position rank-${index + 1}`}>
-                    {index + 1}
+          <div className="ranking-list">
+            {ranking.map((user, index) => (
+              <button
+                key={user.id}
+                className="ranking-row"
+                onClick={() => setHistoryModal(user)}
+              >
+                <span className={`rank-position rank-${index + 1}`}>
+                  {index + 1}
+                </span>
+
+                <div>
+                  <span className="rank-name">{user.username}</span>
+
+                  <span className="rank-blessings">
+                    {user.blessings} 🙏
                   </span>
+                </div>
 
-                  <div>
-                    <span className="rank-name">{player.name}</span>
-                    <span className={`role-badge role-${player.role}`}></span>
-                  </div>
-
-                  <strong>{player.score || 0}</strong>
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel add-player-panel">
-          <div className="panel-title">
-            <Users />
-            <h2>Aggiungi giocatore</h2>
+                <strong className="rank-total">
+                  {user.score}
+                </strong>
+              </button>
+            ))}
           </div>
-
-          <form onSubmit={addPlayer} className="add-player-form">
-            <input
-              type="text"
-              placeholder="Nome partecipante"
-              value={newPlayerName}
-              onChange={(event) => setNewPlayerName(event.target.value)}
-            />
-
-            <select
-              value={newPlayerRole}
-              onChange={(event) => setNewPlayerRole(event.target.value)}
-            >
-              <option value="dev">Sviluppo</option>
-              <option value="pm">Project Manager</option>
-              <option value="qa">Quality Assurance</option>
-              <option value="analyst">Analista funzionale</option>
-            </select>
-
-            <button type="submit">
-              <UserPlus size={18} />
-              Aggiungi
-            </button>
-          </form>
         </section>
 
-        <section className="panel add-penalty-panel">
+        <section className="panel add-event-panel">
           <div className="panel-title">
             <Plus />
-            <h2>Aggiungi bestemmia</h2>
+            <h2>Aggiungi evento</h2>
           </div>
 
-          <form onSubmit={assignPenalty} className="add-penalty-form">
+          <form onSubmit={addEvent} className="add-event-form">
             <select
-              value={selectedPlayerId}
-              onChange={(event) => setSelectedPlayerId(event.target.value)}
+              value={selectedTargetId}
+              onChange={(event) => setSelectedTargetId(event.target.value)}
             >
               <option value="">Seleziona giocatore</option>
-
-              {players.map((player) => (
-                <option key={player.id} value={player.id}>
-                  {player.name}
+              {users.map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.username}
                 </option>
               ))}
             </select>
 
+            <div className="event-type-grid">
+              <button
+                type="button"
+                className={selectedEventType === 'bestemmia' ? 'event-type active danger' : 'event-type danger'}
+                onClick={() => setSelectedEventType('bestemmia')}
+              >
+                🔥 Bestemmia
+              </button>
+
+              <button
+                type="button"
+                className={selectedEventType === 'benedizione' ? 'event-type active success' : 'event-type success'}
+                onClick={() => setSelectedEventType('benedizione')}
+              >
+                🙏 Benedizione
+              </button>
+
+              <button
+                type="button"
+                className={selectedEventType === 'superbestemmia' ? 'event-type active super' : 'event-type super'}
+                onClick={() => setSelectedEventType('superbestemmia')}
+                disabled={!selectedTargetId || getAvailableBlessings(currentUser.id) < 2}
+              >
+                💀 Superbestemmia - costa 2 tue benedizioni
+              </button>
+            </div>
+
             <textarea
-              placeholder="Es. Non ha letto l'analisi"
-              value={newPenaltyDescription}
-              onChange={(event) => setNewPenaltyDescription(event.target.value)}
+              placeholder="Descrizione evento"
+              value={eventDescription}
+              onChange={(event) => setEventDescription(event.target.value)}
             />
 
             <button
               type="submit"
-              disabled={!selectedPlayerId || !newPenaltyDescription.trim()}
+              disabled={!selectedTargetId || !eventDescription.trim()}
             >
-              🔥 Assegna bestemmia
+              Conferma evento
             </button>
           </form>
         </section>
+
+        {isMaintainer && (
+          <section className="panel add-user-panel">
+            <div className="panel-title">
+              <Users />
+              <h2>Aggiungi giocatore</h2>
+            </div>
+
+            <form onSubmit={addUser} className="add-user-form">
+              <input
+                type="text"
+                placeholder="Nome"
+                value={newFirstName}
+                onChange={(event) => setNewFirstName(event.target.value)}
+              />
+
+              <input
+                type="text"
+                placeholder="Cognome"
+                value={newLastName}
+                onChange={(event) => setNewLastName(event.target.value)}
+              />
+
+              <input
+                type="text"
+                placeholder="Username in classifica"
+                value={newUsername}
+                onChange={(event) => setNewUsername(event.target.value)}
+              />
+
+              <select value={newRole} onChange={(event) => setNewRole(event.target.value)}>
+                <option value="dev">Sviluppo</option>
+                <option value="pm">Management</option>
+                <option value="qa">Quality Assurance</option>
+                <option value="analyst">Analista funzionale</option>
+              </select>
+
+              <select
+                value={newAccessRole}
+                onChange={(event) => setNewAccessRole(event.target.value)}
+              >
+                <option value="player">Player</option>
+                <option value="maintainer">Maintainer</option>
+              </select>
+
+              <button type="submit">
+                <UserPlus size={18} />
+                Aggiungi
+              </button>
+            </form>
+          </section>
+        )}
       </section>
 
-      <section className="donation-panel">
+      {/* <section className="donation-panel">
         <div className="donation-content">
           <div>
             <p className="donation-label">Ogni bestemmia ha un costo.</p>
@@ -407,6 +612,32 @@ async function deletePlayerFromHistory(player) {
             💸 Dona su PayPal
           </a>
         </div>
+      </section> */}
+
+      <section className="account-panel">
+        <div className="account-content">
+          <div>
+            <p className="account-label">
+              Sessione attiva
+            </p>
+
+            <strong>
+              {currentUser.username}
+            </strong>
+
+            <p>
+              {getRoleLabel(currentUser.role)} · {currentUser.accessRole}
+            </p>
+          </div>
+
+          <button
+            className="logout-button"
+            onClick={logout}
+          >
+            <LogOut size={18} />
+            Logout
+          </button>
+        </div>
       </section>
 
       {historyModal && (
@@ -416,44 +647,57 @@ async function deletePlayerFromHistory(player) {
               <X />
             </button>
 
-            <h2>Bestemmie di {historyModal.name}</h2>
+            <h2>Storico di {historyModal.username}</h2>
 
-            {historyLoading ? (
-              <p>Caricamento storico...</p>
-            ) : selectedPenalties.length === 0 ? (
-              <p>Nessuna bestemmia registrata.</p>
-            ) : (
-              <div className="penalty-history-list">
-                {selectedPenalties.map((penalty) => (
-                  <div className="penalty-history-item" key={penalty.id}>
+            <div className="penalty-history-list">
+              {getUserEvents(historyModal.id).length === 0 ? (
+                <p>Nessun evento registrato.</p>
+              ) : (
+                getUserEvents(historyModal.id).map((item) => (
+                  <div
+                    className={`penalty-history-item event-${item.type} ${
+                      item.consumed ? 'event-consumed' : ''
+                    }`}
+                    key={item.id}
+                  >
                     <div>
-                      <p>{penalty.description}</p>
+                      <p>
+                        {getEventIcon(item.type)} {item.description}
+                      </p>
+
                       <span>
-                        {penalty.createdAt?.toDate
-                          ? penalty.createdAt.toDate().toLocaleDateString('it-IT')
+                        {item.createdByName && `Assegnata da ${item.createdByName} · `}
+                        {item.createdAt?.toDate
+                          ? item.createdAt.toDate().toLocaleDateString('it-IT')
                           : 'Data non disponibile'}
+                        {item.consumed && ` · consumata da ${item.consumedByUserName || 'superbestemmia'}`}
                       </span>
                     </div>
 
-                    <button
-                      className="history-delete-button"
-                      onClick={() => deletePenalty(penalty)}
-                    >
-                      <Trash2 />
-                    </button>
+                    {isMaintainer && historyModal.id !== currentUser.id && (
+                      <button
+                        className="history-delete-button"
+                        onClick={() => deleteEvent(item)}
+                      >
+                        <Trash2 />
+                      </button>
+                    )}
                   </div>
-                ))}
+                ))
+              )}
+            </div>
+
+            {isMaintainer && (
+              <div className="history-footer">
+                <button
+                  className="delete-player-button"
+                  onClick={() => deleteUserFromHistory(historyModal)}
+                >
+                  <Trash2 />
+                  Rimuovi giocatore
+                </button>
               </div>
             )}
-            <div className="history-footer">
-              <button
-                className="delete-player-button"
-                onClick={() => deletePlayerFromHistory(historyModal)}
-              >
-                <Trash2 />
-                Rimuovi giocatore
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -465,13 +709,11 @@ async function deletePlayerFromHistory(player) {
 
             <p>
               Ogni bug in produzione, requisito ambiguo o call infinita può
-              causare una bestemmia certificata.
+              causare una bestemmia certificata. Nessuno è immune.
             </p>
-
-            <p>
-             Sviluppatori, Project manager, analisti, tester sono tutti eleggibili. Nessuno è immune.
-            </p>
-
+            <p>Bestemmia: +1 punto.</p>
+            <p>Benedizione: -1 punto e crea 1 credito benedizione.</p>
+            <p>Superbestemmia: +2 punti e consuma 2 benedizioni disponibili.</p>
             <p>
               Clicca su un giocatore in classifica per vedere lo storico e
               rimuovere eventuali bestemmie non valide.
