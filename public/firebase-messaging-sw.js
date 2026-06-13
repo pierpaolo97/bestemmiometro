@@ -10,15 +10,4 @@ firebase.initializeApp({
   appId: '1:950657704844:web:40efc6cdbc11dc5afd2ca9',
 })
 
-const messaging = firebase.messaging()
-
-messaging.onBackgroundMessage((payload) => {
-  self.registration.showNotification(
-    payload.notification?.title || 'Bestemmiometro',
-    {
-      body: payload.notification?.body || 'Nuovo evento registrato',
-      icon: '/bestemmiometro/icons/icon-192.png',
-      badge: '/bestemmiometro/icons/icon-192.png',
-    }
-  )
-})
+firebase.messaging()

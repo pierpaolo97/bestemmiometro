@@ -81,6 +81,7 @@ exports.notifyNewEvent = onDocumentCreated(
           },
 
           notification: {
+            tag: `bestemmiometro-${data.targetId}`,
             icon:
               'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
 
