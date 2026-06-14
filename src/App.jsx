@@ -11,11 +11,11 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore'
-import { db } from './firebase'
+import { db, getFirebaseMessaging } from './firebase'
 import { Info, Plus, Trash2, Trophy, Users, UserPlus, X, LogOut } from 'lucide-react'
 import './App.css'
 import { getToken, onMessage } from 'firebase/messaging'
-import { messaging } from './firebase'
+import { getFirebaseMessaging } from './firebase'
 
 const SESSION_KEY = 'bestemmiometro_user'
 
@@ -53,7 +53,8 @@ export default function App() {
 
   async function enableNotifications() {
     try {
-      if (!('Notification' in window)) {
+      const messaging = await getFirebaseMessaging()
+      if (!messaging) {
         showToast('Notifiche non supportate su questo dispositivo.', 'danger')
         return
       }
