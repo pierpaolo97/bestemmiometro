@@ -51,6 +51,7 @@ export default function App() {
   const [showNotificationModal, setShowNotificationModal] = useState(false)
 
   async function enableNotifications() {
+    setShowNotificationModal(false)
     try {
       if (typeof window === 'undefined' || !('Notification' in window)) {
         showToast('Notifiche non supportate da questo browser.', 'danger')
