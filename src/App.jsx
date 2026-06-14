@@ -15,7 +15,6 @@ import { db, getFirebaseMessaging } from './firebase'
 import { Info, Plus, Trash2, Trophy, Users, UserPlus, X, LogOut } from 'lucide-react'
 import './App.css'
 import { getToken, onMessage } from 'firebase/messaging'
-import { getFirebaseMessaging } from './firebase'
 
 const SESSION_KEY = 'bestemmiometro_user'
 
@@ -53,8 +52,12 @@ export default function App() {
 
   async function enableNotifications() {
     try {
-      const messaging = await getFirebaseMessaging()
-      if (!messaging) {
+      if (typeof window === 'undefined' || !('Notification' in window)) {
+        showToast('Notifiche non supportate da questo browser.', 'danger')
+        return
+      }
+
+      if (!('Notification' in window)) {
         showToast('Notifiche non supportate su questo dispositivo.', 'danger')
         return
       }
@@ -69,6 +72,12 @@ export default function App() {
       const registration = await navigator.serviceWorker.register(
         `${import.meta.env.BASE_URL}firebase-messaging-sw.js`
       )
+
+      const messaging = await getFirebaseMessaging()
+      if (!messaging) {
+        showToast('Notifiche non supportate da questo browser.', 'danger')
+        return
+      }
 
       const token = await getToken(messaging, {
         vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
@@ -131,22 +140,38 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return
 
-    const unsubscribe = onMessage(messaging, (payload) => {
-      showToast(
-        `${payload.notification?.title || 'Bestemmiometro'} - ${
-          payload.notification?.body || 'Nuovo evento'
-        }`,
-        'danger'
-      )
-    })
+    let unsubscribeNotifications = null
 
-    return () => unsubscribe()
+    async function setupMessages() {
+      const messaging = await getFirebaseMessaging()
+
+      if (!messaging) return
+
+      unsubscribeNotifications = onMessage(messaging, (payload) => {
+        showToast(
+          `${payload.notification?.title || 'Bestemmiometro'} - ${
+            payload.notification?.body || 'Nuovo evento'
+          }`,
+          'danger'
+        )
+      })
+    }
+
+    setupMessages()
+
+    return () => {
+      if (unsubscribeNotifications) {
+        unsubscribeNotifications()
+      }
+    }
   }, [currentUser])
 
   useEffect(() => {
     if (!currentUser) return
+    const notificationsSupported = typeof Notification !== 'undefined'
 
     if (
+      !notificationsSupported ||
       Notification.permission !== 'granted' ||
       !currentUser.notificationsEnabled
     ) {
