@@ -264,10 +264,10 @@ export default function App() {
 
     if (!target || !description) return
 
-    if (selectedEventType === 'superbestemmia' && getAvailableBlessings(currentUser.id) < 2) {
+    /* if (selectedEventType === 'superbestemmia' && getAvailableBlessings(currentUser.id) < 2) {
       showToast('Ti servono 2 tue benedizioni disponibili per una superbestemmia.', 'danger')
       return
-    }
+    } */
 
     const eventConfig = {
       bestemmia: {
@@ -319,16 +319,16 @@ export default function App() {
         .filter((item) => !item.consumed)
         .slice(0, 2)
 
-      await Promise.all(
-        availableBlessings.map((blessing) =>
-          updateDoc(doc(db, 'events', blessing.id), {
-            consumed: true,
-            consumedByEventId: createdEvent.id,
-            consumedByUserId: currentUser.id,
-            consumedByUserName: currentUser.username,
-          })
-        )
-      )
+      // await Promise.all(
+      //   availableBlessings.map((blessing) =>
+      //     updateDoc(doc(db, 'events', blessing.id), {
+      //       consumed: true,
+      //       consumedByEventId: createdEvent.id,
+      //       consumedByUserId: currentUser.id,
+      //       consumedByUserName: currentUser.username,
+      //     })
+      //   )
+      // )
     }
 
     if (selectedEventType === 'bestemmia' || selectedEventType === 'superbestemmia') {
@@ -350,24 +350,24 @@ export default function App() {
     const confirmed = window.confirm('Vuoi davvero eliminare questo evento?')
     if (!confirmed) return
 
-    if (item.type === 'superbestemmia') {
-      const consumedBlessings = events.filter(
-        (event) => event.consumedByEventId === item.id
-      )
+  //   if (item.type === 'superbestemmia') {
+  //     const consumedBlessings = events.filter(
+  //       (event) => event.consumedByEventId === item.id
+  //     )
 
-      await Promise.all(
-        consumedBlessings.map((blessing) =>
-          updateDoc(doc(db, 'events', blessing.id), {
-            consumed: false,
-            consumedByEventId: null,
-          })
-        )
-      )
-    }
+  //     await Promise.all(
+  //       consumedBlessings.map((blessing) =>
+  //         updateDoc(doc(db, 'events', blessing.id), {
+  //           consumed: false,
+  //           consumedByEventId: null,
+  //         })
+  //       )
+  //     )
+  //   }
 
-    await deleteDoc(doc(db, 'events', item.id))
+  //   await deleteDoc(doc(db, 'events', item.id))
 
-    showToast('Evento rimosso.', 'success')
+  //   showToast('Evento rimosso.', 'success')
   }
 
   async function deleteUserFromHistory(user) {
@@ -623,9 +623,9 @@ export default function App() {
                 type="button"
                 className={selectedEventType === 'superbestemmia' ? 'event-type active super' : 'event-type super'}
                 onClick={() => setSelectedEventType('superbestemmia')}
-                disabled={!selectedTargetId || getAvailableBlessings(currentUser.id) < 2}
-              >
-                💀 Superbestemmia - costa 2 tue benedizioni
+                /* disabled={!selectedTargetId || getAvailableBlessings(currentUser.id) < 2} */
+               >
+                💀 Superbestemmia
               </button>
             </div>
 
@@ -860,8 +860,8 @@ export default function App() {
               causare una bestemmia certificata. Nessuno è immune.
             </p>
             <p>Bestemmia: +1 punto.</p>
-            <p>Benedizione: -1 punto e crea 1 credito benedizione.</p>
-            <p>Superbestemmia: +2 punti e consuma 2 benedizioni disponibili.</p>
+            <p>Benedizione: -1 punto.</p>
+            <p>Superbestemmia: +2 punti.</p>
             <p>
               Clicca su un giocatore in classifica per vedere lo storico e
               rimuovere eventuali bestemmie non valide.
