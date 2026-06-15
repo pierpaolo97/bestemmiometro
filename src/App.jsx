@@ -365,9 +365,8 @@ export default function App() {
   //     )
   //   }
 
-  //   await deleteDoc(doc(db, 'events', item.id))
-
-  //   showToast('Evento rimosso.', 'success')
+    await deleteDoc(doc(db, 'events', item.id))
+    showToast('Evento rimosso.', 'success')
   }
 
   async function deleteUserFromHistory(user) {
