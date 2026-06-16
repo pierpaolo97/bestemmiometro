@@ -96,6 +96,8 @@ export default function App() {
         updatedAt: serverTimestamp(),
       })
 
+      const updatedUser = { ...currentUser, notificationToken: token, notificationsEnabled: true }
+
       showToast('Notifiche abilitate.', 'success')
     } catch (error) {
       console.error('Errore notifiche:', error)
@@ -169,15 +171,24 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) return
-    const notificationsSupported = typeof Notification !== 'undefined'
 
-    if (
-      !notificationsSupported ||
-      Notification.permission !== 'granted' ||
-      !currentUser.notificationsEnabled
-    ) {
-      setShowNotificationModal(true)
+    const notificationsSupported =
+      typeof Notification !== 'undefined'
+
+    // browser non compatibile → non mostrare nulla
+    if (!notificationsSupported) {
+      return
     }
+
+    // utente già configurato → non mostrare nulla
+    if (
+      currentUser.notificationsEnabled &&
+      Notification.permission === 'granted'
+    ) {
+      return
+    }
+
+    setShowNotificationModal(true)
   }, [currentUser])
 
   const ranking = useMemo(() => {
