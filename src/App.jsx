@@ -172,23 +172,48 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return
 
-    const notificationsSupported =
-      typeof Notification !== 'undefined'
-
-    // browser non compatibile → non mostrare nulla
-    if (!notificationsSupported) {
+    // Se Firebase dice che le notifiche sono già attive,
+    // non chiedere più nulla.
+    if (currentUser.notificationsEnabled === true) {
+      setShowNotificationModal(false)
       return
     }
 
-    // utente già configurato → non mostrare nulla
-    if (
-      currentUser.notificationsEnabled &&
-      Notification.permission === 'granted'
-    ) {
+    const notificationApiAvailable =
+      typeof window !== 'undefined' &&
+      typeof Notification !== 'undefined' &&
+      'serviceWorker' in navigator
+
+    if (!notificationApiAvailable) {
+      setShowNotificationModal(false)
       return
     }
 
-    setShowNotificationModal(true)
+    const isIOS =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true
+
+    const isAndroid =
+      /Android/i.test(navigator.userAgent)
+
+    const canAskNotifications =
+      isAndroid || (isIOS && isStandalone)
+
+    if (!canAskNotifications) {
+      setShowNotificationModal(false)
+      return
+    }
+
+    if (Notification.permission !== 'granted') {
+      setShowNotificationModal(true)
+      return
+    }
+
+    setShowNotificationModal(false)
   }, [currentUser])
 
   const ranking = useMemo(() => {
