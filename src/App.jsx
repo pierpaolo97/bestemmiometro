@@ -427,12 +427,14 @@ export default function App() {
   }
 
   function getUserScore(userId) {
-    return events
+    const score = events
       .filter((event) => event.targetId === userId)
       .filter((event) => !event.consumed)
       .reduce((total, event) => total + (event.points || 0), 0)
-  }
 
+    return Math.max(score, 0)
+  }
+  
   function getAvailableBlessings(userId) {
     return events
       .filter((event) => event.targetId === userId)
