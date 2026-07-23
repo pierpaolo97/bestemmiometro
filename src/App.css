@@ -1910,7 +1910,7 @@ textarea {
   position: fixed;
   left: 12px;
   right: 12px;
-  bottom: 12px;
+  bottom: 15px;
   z-index: 50;
 
   display: grid;
