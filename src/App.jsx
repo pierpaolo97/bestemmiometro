@@ -12,7 +12,21 @@ import {
   where,
 } from 'firebase/firestore'
 import { db, getFirebaseMessaging } from './firebase'
-import { Info, Plus, Trash2, Trophy, Users, UserPlus, X, LogOut } from 'lucide-react'
+import {
+  Bell,
+  BookOpen,
+  Home,
+  Info,
+  LogOut,
+  Plus,
+  Scale,
+  Trash2,
+  Trophy,
+  UserPlus,
+  UserRound,
+  Users,
+  X,
+} from 'lucide-react'
 import './App.css'
 import { getToken, onMessage } from 'firebase/messaging'
 
@@ -49,6 +63,7 @@ export default function App() {
 
   const isMaintainer = currentUser?.accessRole === 'maintainer'
   const [showNotificationModal, setShowNotificationModal] = useState(false)
+  const [activeTab, setActiveTab] = useState('home')
 
   async function enableNotifications() {
     setShowNotificationModal(false)
@@ -97,7 +112,8 @@ export default function App() {
       })
 
       const updatedUser = { ...currentUser, notificationToken: token, notificationsEnabled: true }
-
+      localStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser))
+      setCurrentUser(updatedUser)
       showToast('Notifiche abilitate.', 'success')
     } catch (error) {
       console.error('Errore notifiche:', error)
@@ -348,24 +364,6 @@ export default function App() {
       createdAt: serverTimestamp(),
     })
 
-    if (selectedEventType === 'superbestemmia') {
-      const availableBlessings = events
-        .filter((item) => item.targetId === currentUser.id)
-        .filter((item) => item.type === 'benedizione')
-        .filter((item) => !item.consumed)
-        .slice(0, 2)
-
-      // await Promise.all(
-      //   availableBlessings.map((blessing) =>
-      //     updateDoc(doc(db, 'events', blessing.id), {
-      //       consumed: true,
-      //       consumedByEventId: createdEvent.id,
-      //       consumedByUserId: currentUser.id,
-      //       consumedByUserName: currentUser.username,
-      //     })
-      //   )
-      // )
-    }
 
     if (selectedEventType === 'bestemmia' || selectedEventType === 'superbestemmia') {
       triggerBestemmiaEffect()
@@ -561,232 +559,334 @@ export default function App() {
   }
 
   return (
-    <main className="app">
+    <main className="app app-shell">
       {toast && (
         <div className={`toast toast-${toast.type}`}>
           {toast.message}
         </div>
       )}
 
-      <header className="hero">
+      <header className="app-header">
         <img
           className="hero-logo"
           src={`${import.meta.env.BASE_URL}images/bestemmiometro-header.PNG`}
           alt="Bestemmiometro"
         />
 
-        <button className="info-button" onClick={() => setShowInfo(true)}>
-          <Info size={18} />
-          Info
+        <button
+          type="button"
+          className="header-info-button"
+          onClick={() => setShowInfo(true)}
+          aria-label="Regole del gioco"
+        >
+          <Info size={20} />
         </button>
       </header>
 
-      <section className="dashboard">
-        <section className="panel ranking-panel">
-          <div className="panel-title">
-            <Trophy />
-            <div>
-              <h2>Classifica</h2>
-              <p className="panel-subtitle">
-                Clicca su un giocatore per vedere lo storico
-              </p>
-            </div>
-          </div>
+      <nav className="app-navigation" aria-label="Navigazione principale">
+        <button
+          type="button"
+          className={activeTab === 'home' ? 'nav-item active' : 'nav-item'}
+          onClick={() => setActiveTab('home')}
+        >
+          <Home size={21} />
+          <span>Home</span>
+        </button>
 
-          <div className="ranking-list">
-            {ranking.map((user, index) => (
-              <button
-                key={user.id}
-                className="ranking-row"
-                onClick={() => setHistoryModal(user)}
-              >
-                <span className={`rank-position rank-${index + 1}`}>
-                  {index + 1}
-                </span>
+        <button
+          type="button"
+          className={activeTab === 'events' ? 'nav-item active' : 'nav-item'}
+          onClick={() => setActiveTab('events')}
+        >
+          <Plus size={21} />
+          <span>Eventi</span>
+        </button>
 
+        <button
+          type="button"
+          className={activeTab === 'var' ? 'nav-item active' : 'nav-item'}
+          onClick={() => setActiveTab('var')}
+        >
+          <Scale size={21} />
+          <span>VAR</span>
+        </button>
+
+        <button
+          type="button"
+          className={activeTab === 'profile' ? 'nav-item active' : 'nav-item'}
+          onClick={() => setActiveTab('profile')}
+        >
+          <UserRound size={21} />
+          <span>Profilo</span>
+        </button>
+      </nav>
+
+      <section className="app-content">
+        {activeTab === 'home' && (
+          <section className="page-view">
+            <section className="panel ranking-panel">
+              <div className="panel-title">
+                <Trophy />
                 <div>
-                  <span className="rank-name">{user.username}</span>
-
-                  <span className="rank-blessings">
-                    {user.blessings} 🙏
-                  </span>
+                  <h2>Classifica</h2>
+                  <p className="panel-subtitle">
+                    Tocca un giocatore per vedere lo storico
+                  </p>
                 </div>
+              </div>
 
-                <strong className="rank-total">
-                  {user.score}
-                </strong>
-              </button>
-            ))}
-          </div>
-        </section>
+              <div className="ranking-list">
+                {ranking.map((user, index) => (
+                  <button
+                    key={user.id}
+                    className="ranking-row"
+                    onClick={() => setHistoryModal(user)}
+                  >
+                    <span className={`rank-position rank-${index + 1}`}>
+                      {index + 1}
+                    </span>
 
-        <section className="panel add-event-panel">
-          <div className="panel-title">
-            <Plus />
-            <h2>Aggiungi evento</h2>
-          </div>
+                    <div>
+                      <span className="rank-name">{user.username}</span>
 
-          <form onSubmit={addEvent} className="add-event-form">
-            <select
-              value={selectedTargetId}
-              onChange={(event) => setSelectedTargetId(event.target.value)}
-            >
-              <option value="">Seleziona giocatore</option>
-              {users.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.username}
-                </option>
-              ))}
-            </select>
+                      <span className="rank-blessings">
+                        {user.blessings} 🙏
+                      </span>
+                    </div>
 
-            <div className="event-type-grid">
-              <button
-                type="button"
-                className={selectedEventType === 'bestemmia' ? 'event-type active danger' : 'event-type danger'}
-                onClick={() => setSelectedEventType('bestemmia')}
-              >
-                🔥 Bestemmia
-              </button>
-
-              <button
-                type="button"
-                className={selectedEventType === 'benedizione' ? 'event-type active success' : 'event-type success'}
-                onClick={() => setSelectedEventType('benedizione')}
-              >
-                🙏 Benedizione
-              </button>
-
-              <button
-                type="button"
-                className={selectedEventType === 'superbestemmia' ? 'event-type active super' : 'event-type super'}
-                onClick={() => setSelectedEventType('superbestemmia')}
-                /* disabled={!selectedTargetId || getAvailableBlessings(currentUser.id) < 2} */
-               >
-                💀 Superbestemmia
-              </button>
-            </div>
-
-            <textarea
-              placeholder="Descrizione evento"
-              value={eventDescription}
-              onChange={(event) => setEventDescription(event.target.value)}
-            />
-
-            <button
-              type="submit"
-              disabled={!selectedTargetId || !eventDescription.trim()}
-            >
-              Conferma evento
-            </button>
-          </form>
-        </section>
-
-        {isMaintainer && (
-          <section className="panel add-user-panel">
-            <div className="panel-title">
-              <Users />
-              <h2>Aggiungi giocatore</h2>
-            </div>
-
-            <form onSubmit={addUser} className="add-user-form">
-              <input
-                type="text"
-                placeholder="Nome"
-                value={newFirstName}
-                onChange={(event) => setNewFirstName(event.target.value)}
-              />
-
-              <input
-                type="text"
-                placeholder="Cognome"
-                value={newLastName}
-                onChange={(event) => setNewLastName(event.target.value)}
-              />
-
-              <input
-                type="text"
-                placeholder="Username in classifica"
-                value={newUsername}
-                onChange={(event) => setNewUsername(event.target.value)}
-              />
-
-              {/* <select value={newRole} onChange={(event) => setNewRole(event.target.value)}>
-                <option value="dev">Sviluppo</option>
-                <option value="pm">Management</option>
-                <option value="qa">Quality Assurance</option>
-                <option value="analyst">Analista funzionale</option>
-              </select> */}
-
-              <select
-                value={newAccessRole}
-                onChange={(event) => setNewAccessRole(event.target.value)}
-              >
-                <option value="player">Player</option>
-                <option value="maintainer">Maintainer</option>
-              </select>
-
-              <button type="submit">
-                <UserPlus size={18} />
-                Aggiungi
-              </button>
-            </form>
+                    <strong className="rank-total">
+                      {user.score}
+                    </strong>
+                  </button>
+                ))}
+              </div>
+            </section>
           </section>
         )}
-      </section>
 
-      {/* <section className="donation-panel">
-        <div className="donation-content">
-          <div>
-            <p className="donation-label">Ogni bestemmia ha un costo.</p>
-            <p className="donation-text">
-              Ogni penitenza contribuisce alla cassa comune.
-            </p>
-          </div>
+        {activeTab === 'events' && (
+          <section className="page-view events-page">
+            <section className="panel add-event-panel">
+              <div className="panel-title">
+                <Plus />
+                <div>
+                  <h2>Aggiungi evento</h2>
+                  <p className="panel-subtitle">
+                    Assegna una bestemmia, una benedizione o una superbestemmia
+                  </p>
+                </div>
+              </div>
 
-          <a
-            className="paypal-button"
-            href="https://paypal.me/TUO_LINK"
-            target="_blank"
-            rel="noreferrer"
-          >
-            💸 Dona su PayPal
-          </a>
-        </div>
-      </section> */}
+              <form onSubmit={addEvent} className="add-event-form">
+                <select
+                  value={selectedTargetId}
+                  onChange={(event) => setSelectedTargetId(event.target.value)}
+                >
+                  <option value="">Seleziona giocatore</option>
 
-      <section className="account-panel">
-        <div className="account-content">
-          <div>
-            <p className="account-label">
-              Sessione attiva
-            </p>
+                  {users.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.username}
+                    </option>
+                  ))}
+                </select>
 
-            <strong>
-              {currentUser.username}
-            </strong>
+                <div className="event-type-grid">
+                  <button
+                    type="button"
+                    className={
+                      selectedEventType === 'bestemmia'
+                        ? 'event-type active danger'
+                        : 'event-type danger'
+                    }
+                    onClick={() => setSelectedEventType('bestemmia')}
+                  >
+                    🔥 Bestemmia
+                  </button>
 
-            <p>
-              {getRoleLabel(currentUser.role)} · {currentUser.accessRole}
-            </p>
-          </div>
+                  <button
+                    type="button"
+                    className={
+                      selectedEventType === 'benedizione'
+                        ? 'event-type active success'
+                        : 'event-type success'
+                    }
+                    onClick={() => setSelectedEventType('benedizione')}
+                  >
+                    🙏 Benedizione
+                  </button>
 
-          <div className="account-actions">
-            <button
-              className="notification-button"
-              onClick={enableNotifications}
-            >
-              🔔 Notifiche
-            </button>
+                  <button
+                    type="button"
+                    className={
+                      selectedEventType === 'superbestemmia'
+                        ? 'event-type active super'
+                        : 'event-type super'
+                    }
+                    onClick={() => setSelectedEventType('superbestemmia')}
+                  >
+                    💀 Superbestemmia
+                  </button>
+                </div>
 
-            <button
-              className="logout-button"
-              onClick={logout}
-            >
-              <LogOut size={18} />
-              Logout
-            </button>
-          </div>
-        </div>
+                <textarea
+                  placeholder="Descrizione evento"
+                  value={eventDescription}
+                  onChange={(event) => setEventDescription(event.target.value)}
+                />
+
+                <button
+                  type="submit"
+                  disabled={!selectedTargetId || !eventDescription.trim()}
+                >
+                  Conferma evento
+                </button>
+              </form>
+            </section>
+
+            {isMaintainer && (
+              <section className="panel add-user-panel">
+                <div className="panel-title">
+                  <Users />
+                  <div>
+                    <h2>Aggiungi giocatore</h2>
+                    <p className="panel-subtitle">
+                      Crea un nuovo membro del team
+                    </p>
+                  </div>
+                </div>
+
+                <form onSubmit={addUser} className="add-user-form">
+                  <input
+                    type="text"
+                    placeholder="Nome"
+                    value={newFirstName}
+                    onChange={(event) => setNewFirstName(event.target.value)}
+                  />
+
+                  <input
+                    type="text"
+                    placeholder="Cognome"
+                    value={newLastName}
+                    onChange={(event) => setNewLastName(event.target.value)}
+                  />
+
+                  <input
+                    type="text"
+                    placeholder="Username in classifica"
+                    value={newUsername}
+                    onChange={(event) => setNewUsername(event.target.value)}
+                  />
+
+                  <select
+                    value={newAccessRole}
+                    onChange={(event) => setNewAccessRole(event.target.value)}
+                  >
+                    <option value="player">Player</option>
+                    <option value="maintainer">Maintainer</option>
+                  </select>
+
+                  <button type="submit">
+                    <UserPlus size={18} />
+                    Aggiungi
+                  </button>
+                </form>
+              </section>
+            )}
+          </section>
+        )}
+
+        {activeTab === 'var' && (
+          <section className="page-view">
+            <section className="panel var-placeholder-panel">
+              <div className="var-placeholder-icon">
+                <Scale size={38} />
+              </div>
+
+              <h2>Modalità VAR</h2>
+
+              <p>
+                Qui compariranno le contestazioni delle bestemmie,
+                le votazioni e il tempo rimasto.
+              </p>
+
+              <span className="coming-soon-badge">
+                Prossimamente
+              </span>
+            </section>
+          </section>
+        )}
+
+        {activeTab === 'profile' && (
+          <section className="page-view profile-page">
+            <section className="panel profile-card">
+              <div className="profile-avatar">
+                {currentUser.username?.charAt(0)?.toUpperCase() || 'U'}
+              </div>
+
+              <div className="profile-details">
+                <p className="profile-eyebrow">
+                  Sessione attiva
+                </p>
+
+                <h2>{currentUser.username}</h2>
+
+                <p>
+                  {getRoleLabel(currentUser.role)} · {currentUser.accessRole}
+                </p>
+
+                <span className="team-key-label">
+                  Team: {currentUser.teamKey}
+                </span>
+              </div>
+            </section>
+
+            <section className="panel profile-actions-panel">
+              <button
+                type="button"
+                className="profile-action-button"
+                onClick={enableNotifications}
+              >
+                <Bell size={21} />
+
+                <span>
+                  <strong>Notifiche</strong>
+                  <small>
+                    {currentUser.notificationsEnabled
+                      ? 'Notifiche abilitate'
+                      : 'Abilita le notifiche push'}
+                  </small>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className="profile-action-button"
+                onClick={() => setShowInfo(true)}
+              >
+                <BookOpen size={21} />
+
+                <span>
+                  <strong>Regole del gioco</strong>
+                  <small>Consulta punteggi e funzionamento</small>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className="profile-action-button logout-profile-button"
+                onClick={logout}
+              >
+                <LogOut size={21} />
+
+                <span>
+                  <strong>Logout</strong>
+                  <small>Termina la sessione corrente</small>
+                </span>
+              </button>
+            </section>
+          </section>
+        )}
       </section>
 
       {historyModal && (
@@ -836,7 +936,7 @@ export default function App() {
               )}
             </div>
 
-            {isMaintainer && (
+            {isMaintainer && historyModal.id !== currentUser.id && (
               <div className="history-footer">
                 <button
                   className="delete-player-button"
