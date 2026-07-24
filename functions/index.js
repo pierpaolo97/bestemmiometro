@@ -1,8 +1,10 @@
-const { onDocumentCreated } = require('firebase-functions/v2/firestore')
+const {
+  onDocumentCreated,
+  onDocumentUpdated,
+} = require('firebase-functions/v2/firestore')
 const { initializeApp } = require('firebase-admin/app')
 const { getFirestore } = require('firebase-admin/firestore')
 const { getMessaging } = require('firebase-admin/messaging')
-const { onDocumentUpdated } = require('firebase-functions/v2/firestore')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
 
 initializeApp()
@@ -224,6 +226,166 @@ exports.finalizeExpiredVarCases = onSchedule(
           result
         )
       })
+    )
+  }
+)
+
+exports.notifyNewVar = onDocumentCreated(
+  {
+    document: 'varCases/{varCaseId}',
+    region: 'us-central1',
+  },
+  async (event) => {
+    const varCase = event.data?.data()
+
+    if (!varCase) {
+      console.log('Documento VAR non disponibile.')
+      return
+    }
+
+    const {
+      teamKey,
+      challengedById,
+      challengedByName,
+      targetName,
+      eventDescription,
+      challengeReason,
+      eventId,
+    } = varCase
+
+    if (!teamKey) {
+      console.log('teamKey mancante nel VAR.')
+      return
+    }
+
+    const db = getFirestore()
+
+    const usersSnapshot = await db
+      .collection('users')
+      .where('teamKey', '==', teamKey)
+      .where('notificationsEnabled', '==', true)
+      .get()
+
+    const recipients = usersSnapshot.docs
+      .map((document) => ({
+        id: document.id,
+        ...document.data(),
+      }))
+      .filter(
+        (user) =>
+          Boolean(user.notificationToken) &&
+          user.id !== varCase.challengedById
+      )
+
+    if (recipients.length === 0) {
+      console.log(
+        `Nessun destinatario disponibile per il VAR ${event.params.varCaseId}.`
+      )
+      return
+    }
+
+    const tokens = [
+      ...new Set(
+        recipients.map((user) => user.notificationToken)
+      ),
+    ].slice(0, 500)
+
+    const personName =
+      challengedByName ||
+      targetName ||
+      'Un giocatore'
+
+    const description =
+      eventDescription || 'Evento contestato'
+
+    const reason =
+      challengeReason || 'Nessuna motivazione indicata'
+
+    const response = await getMessaging().sendEachForMulticast({
+      tokens,
+
+      notification: {
+        title: '⚖️ Nuova richiesta VAR',
+        body: `${personName} ha contestato: ${description}`,
+      },
+
+      data: {
+        type: 'var-opened',
+        varCaseId: event.params.varCaseId,
+        eventId: eventId || '',
+        teamKey,
+        challengedByName: personName,
+        eventDescription: description,
+        challengeReason: reason,
+      },
+
+      webpush: {
+        notification: {
+          title: '⚖️ Nuova richiesta VAR',
+          body: `${personName} ha contestato: ${description}`,
+
+          icon: 'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+          badge: 'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+
+          tag: `bestemmiometro-var-${event.params.varCaseId}`,
+
+          requireInteraction: false,
+        },
+
+        fcmOptions: {
+          link: 'https://pierpaolo97.github.io/bestemmiometro/',
+        },
+      },
+    })
+
+    console.log(
+      `Notifica VAR inviata: ${response.successCount} riuscite, ` +
+      `${response.failureCount} fallite.`
+    )
+
+    const invalidTokens = []
+
+    response.responses.forEach((result, index) => {
+      if (result.success) return
+
+      const errorCode = result.error?.code
+
+      console.error(
+        `Errore invio token ${index}:`,
+        errorCode,
+        result.error?.message
+      )
+
+      if (
+        errorCode === 'messaging/registration-token-not-registered' ||
+        errorCode === 'messaging/invalid-registration-token'
+      ) {
+        invalidTokens.push(tokens[index])
+      }
+    })
+
+    if (invalidTokens.length === 0) return
+
+    const batch = db.batch()
+
+    recipients
+      .filter((user) =>
+        invalidTokens.includes(user.notificationToken)
+      )
+      .forEach((user) => {
+        batch.update(
+          db.collection('users').doc(user.id),
+          {
+            notificationToken: null,
+            notificationsEnabled: false,
+          }
+        )
+      })
+
+    await batch.commit()
+
+    console.log(
+      `${invalidTokens.length} token non validi disabilitati.`
     )
   }
 )
