@@ -79,13 +79,21 @@ exports.notifyNewEvent = onDocumentCreated(
           body: notification.body,
         },
 
+        data: {
+          type: 'event-created',
+          eventType: data.type || '',
+          targetId: data.targetId || '',
+          targetName: data.targetName || '',
+          eventId: event.params.eventId || '',
+        },
+
         webpush: {
           fcmOptions: {
             link: 'https://pierpaolo97.github.io/bestemmiometro/',
           },
 
           notification: {
-            tag: `bestemmiometro-${data.targetId}`,
+            tag: `bestemmiometro-${event.params.eventId}`,
             icon:
               'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
 
