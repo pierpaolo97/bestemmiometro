@@ -1652,7 +1652,6 @@ export default function App() {
                         {item.createdAt?.toDate
                           ? item.createdAt.toDate().toLocaleDateString('it-IT')
                           : 'Data non disponibile'}
-                        {item.consumed && ` · consumata da ${item.consumedByUserName || 'superbestemmia'}`}
                       </span>
 
                       {item.blessingApplied && (
