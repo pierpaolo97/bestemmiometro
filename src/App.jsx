@@ -193,14 +193,37 @@ export default function App() {
 
       if (!messaging) return
 
-      unsubscribeNotifications = onMessage(messaging, (payload) => {
-        showToast(
-          `${payload.notification?.title || 'Bestemmiometro'} - ${
-            payload.notification?.body || 'Nuovo evento'
-          }`,
-          'danger'
-        )
-      })
+      unsubscribeNotifications = onMessage(
+        messaging,
+        (payload) => {
+          const messageType = payload.data?.type
+          const eventType = payload.data?.eventType
+
+          let toastType = 'danger'
+
+          if (
+            messageType === 'event-created' &&
+            eventType === 'benedizione'
+          ) {
+            toastType = 'success'
+          }
+
+          if (
+            messageType === 'var-result' &&
+            payload.data?.result === 'approved'
+          ) {
+            toastType = 'success'
+          }
+
+          showToast(
+            `${payload.notification?.title || 'Bestemmiometro'} — ${
+              payload.notification?.body || 'Nuovo aggiornamento'
+            }`,
+            toastType
+          )
+        }
+      )
+
     }
 
     setupMessages()
@@ -361,70 +384,144 @@ export default function App() {
     event.preventDefault()
 
     const description = eventDescription.trim()
-    const target = users.find((user) => user.id === selectedTargetId)
+    const target = users.find(
+      (user) => user.id === selectedTargetId
+    )
 
     if (!target || !description) return
 
-    /* if (selectedEventType === 'superbestemmia' && getAvailableBlessings(currentUser.id) < 2) {
-      showToast('Ti servono 2 tue benedizioni disponibili per una superbestemmia.', 'danger')
-      return
-    } */
+    // Congela il tipo selezionato per tutta l'operazione.
+    const eventType = selectedEventType
 
     const eventConfig = {
       bestemmia: {
         points: 1,
         icon: '🔥',
         label: 'Bestemmia',
+        toastType: 'danger',
       },
       benedizione: {
-        points: -1,
+        points: 0,
         icon: '🙏',
         label: 'Benedizione',
+        toastType: 'success',
       },
       superbestemmia: {
         points: 2,
         icon: '💀',
         label: 'Superbestemmia',
+        toastType: 'danger',
       },
     }
 
-    const config = eventConfig[selectedEventType]
+    const config = eventConfig[eventType]
 
-    await addDoc(collection(db, 'events'), {
-      teamKey: currentUser.teamKey,
-
-      targetId: target.id,
-      targetName: target.username,
-      targetRole: target.role,
-
-      type: selectedEventType,
-      points: config.points,
-      description,
-
-      createdById: currentUser.id,
-      createdByName: currentUser.username,
-
-      paidById: selectedEventType === 'superbestemmia' ? currentUser.id : null,
-      paidByName: selectedEventType === 'superbestemmia' ? currentUser.username : null,
-
-      consumed: false,
-      consumedByEventId: null,
-
-      createdAt: serverTimestamp(),
-    })
-
-
-    if (selectedEventType === 'bestemmia' || selectedEventType === 'superbestemmia') {
-      triggerBestemmiaEffect()
-    } else {
-      triggerRedemptionEffect()
+    if (!config) {
+      console.error('Tipo evento non valido:', eventType)
+      showToast('Tipo evento non valido.', 'danger')
+      return
     }
 
-    showToast(`${config.icon} ${target.username}: ${description}`, selectedEventType === 'benedizione' ? 'success' : 'danger')
+    const availableBlessing =
+      eventType === 'bestemmia'
+        ? events
+            .filter((item) => item.targetId === target.id)
+            .filter((item) => item.type === 'benedizione')
+            .filter((item) => !item.consumed)
+            .sort(
+              (a, b) =>
+                (a.createdAt?.seconds || 0) -
+                (b.createdAt?.seconds || 0)
+            )[0]
+        : null
 
-    setSelectedTargetId('')
-    setSelectedEventType('bestemmia')
-    setEventDescription('')
+    const effectivePoints =
+      eventType === 'bestemmia' && availableBlessing
+        ? 0
+        : config.points
+
+    try {
+      const createdEvent = await addDoc(
+        collection(db, 'events'),
+        {
+          teamKey: currentUser.teamKey,
+
+          targetId: target.id,
+          targetName: target.username,
+          targetRole: target.role,
+
+          type: eventType,
+          points: effectivePoints,
+          description,
+
+          createdById: currentUser.id,
+          createdByName: currentUser.username,
+
+          paidById:
+            eventType === 'superbestemmia'
+              ? currentUser.id
+              : null,
+
+          paidByName:
+            eventType === 'superbestemmia'
+              ? currentUser.username
+              : null,
+
+          blessingApplied: Boolean(availableBlessing),
+          consumedBlessingId:
+            availableBlessing?.id || null,
+
+          consumed: false,
+          consumedByEventId: null,
+
+          createdAt: serverTimestamp(),
+        }
+      )
+
+      if (availableBlessing) {
+        await updateDoc(
+          doc(db, 'events', availableBlessing.id),
+          {
+            consumed: true,
+            consumedByEventId: createdEvent.id,
+            consumedByUserId: target.id,
+            consumedByUserName: target.username,
+            updatedAt: serverTimestamp(),
+          }
+        )
+      }
+
+      if (
+        eventType === 'bestemmia' ||
+        eventType === 'superbestemmia'
+      ) {
+        triggerBestemmiaEffect()
+      } else {
+        triggerRedemptionEffect()
+      }
+
+      if (availableBlessing) {
+        showToast(
+          `🙏 La benedizione di ${target.username} ha neutralizzato la bestemmia.`,
+          'success'
+        )
+      } else {
+        showToast(
+          `${config.icon} ${config.label} assegnata a ${target.username}: ${description}`,
+          config.toastType
+        )
+      }
+
+      setSelectedTargetId('')
+      setSelectedEventType('bestemmia')
+      setEventDescription('')
+    } catch (error) {
+      console.error('Errore aggiunta evento:', error)
+      showToast(
+        `Errore durante l'assegnazione della ${config.label.toLowerCase()}.`,
+        'danger'
+      )
+    }
   }
   
   function openVarRequestModal(item) {
@@ -726,26 +823,39 @@ export default function App() {
   async function deleteEvent(item) {
     if (!isMaintainer) return
 
-    const confirmed = window.confirm('Vuoi davvero eliminare questo evento?')
+    const confirmed = window.confirm(
+      'Vuoi davvero eliminare questo evento?'
+    )
+
     if (!confirmed) return
 
-  //   if (item.type === 'superbestemmia') {
-  //     const consumedBlessings = events.filter(
-  //       (event) => event.consumedByEventId === item.id
-  //     )
+    const consumedBlessing = events.find(
+      (event) =>
+        event.type === 'benedizione' &&
+        event.consumedByEventId === item.id
+    )
 
-  //     await Promise.all(
-  //       consumedBlessings.map((blessing) =>
-  //         updateDoc(doc(db, 'events', blessing.id), {
-  //           consumed: false,
-  //           consumedByEventId: null,
-  //         })
-  //       )
-  //     )
-  //   }
+    if (consumedBlessing) {
+      await updateDoc(
+        doc(db, 'events', consumedBlessing.id),
+        {
+          consumed: false,
+          consumedByEventId: null,
+          consumedByUserId: null,
+          consumedByUserName: null,
+          updatedAt: serverTimestamp(),
+        }
+      )
+    }
 
     await deleteDoc(doc(db, 'events', item.id))
-    showToast('Evento rimosso.', 'success')
+
+    showToast(
+      consumedBlessing
+        ? 'Evento rimosso e benedizione ripristinata.'
+        : 'Evento rimosso.',
+      'success'
+    )
   }
 
   async function deleteUserFromHistory(user) {
@@ -772,9 +882,13 @@ export default function App() {
   function getUserScore(userId) {
     const score = events
       .filter((event) => event.targetId === userId)
-      .filter((event) => !event.consumed)
       .filter((event) => !event.cancelledByVar)
-      .reduce((total, event) => total + (event.points || 0), 0)
+      .filter((event) => event.type !== 'benedizione')
+      .reduce(
+        (total, event) =>
+          total + (event.points || 0),
+        0
+      )
 
     return Math.max(score, 0)
   }
@@ -1541,6 +1655,12 @@ export default function App() {
                         {item.consumed && ` · consumata da ${item.consumedByUserName || 'superbestemmia'}`}
                       </span>
 
+                      {item.blessingApplied && (
+                        <span className="event-blessing-applied">
+                          🙏 Bestemmia neutralizzata da una benedizione
+                        </span>
+                      )}
+
                       {item.varStatus === 'open' && (
                         <span className="event-var-status event-var-open">
                           🎥 VAR in corso
@@ -1745,8 +1865,16 @@ export default function App() {
               causare una bestemmia certificata. Nessuno è immune.
             </p>
             <p>Bestemmia: +1 punto.</p>
-            <p>Benedizione: -1 punto.</p>
-            <p>Superbestemmia: +2 punti.</p>
+
+            <p>
+              Benedizione: protegge dalla prossima bestemmia e viene
+              consumata quando la neutralizza.
+            </p>
+
+            <p>
+              Superbestemmia: +2 punti e non può essere neutralizzata da
+              una benedizione.
+            </p>
             <p>
               Clicca su un giocatore in classifica per vedere lo storico e
               rimuovere eventuali bestemmie non valide.

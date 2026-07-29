@@ -108,46 +108,234 @@ exports.notifyNewEvent = onDocumentCreated(
   }
 )
 
+async function notifyVarResult(varCase, result) {
+  const db = getFirestore()
+
+  if (!varCase?.teamKey) {
+    console.log(
+      'Impossibile notificare il risultato VAR: teamKey mancante.'
+    )
+    return
+  }
+
+  const usersSnapshot = await db
+    .collection('users')
+    .where('teamKey', '==', varCase.teamKey)
+    .where('notificationsEnabled', '==', true)
+    .get()
+
+  const recipients = usersSnapshot.docs
+    .map((document) => ({
+      id: document.id,
+      notificationToken: document.data().notificationToken,
+    }))
+    .filter((user) => Boolean(user.notificationToken))
+
+  if (!recipients.length) {
+    console.log(
+      `Nessun token disponibile per l'esito del VAR ${varCase.eventId}.`
+    )
+    return
+  }
+
+  const tokens = [
+    ...new Set(
+      recipients.map((user) => user.notificationToken)
+    ),
+  ].slice(0, 500)
+
+  const title =
+    result === 'approved'
+      ? '✅ VAR approvato'
+      : '❌ VAR respinto'
+
+  const body =
+    result === 'approved'
+      ? `La bestemmia assegnata a ${varCase.targetName} è stata annullata.`
+      : `La bestemmia assegnata a ${varCase.targetName} rimane valida.`
+
+  const response =
+    await getMessaging().sendEachForMulticast({
+      tokens,
+
+      notification: {
+        title,
+        body,
+      },
+
+      data: {
+        type: 'var-result',
+        result,
+        eventId: varCase.eventId || '',
+        varCaseId: varCase.eventId || '',
+        teamKey: varCase.teamKey || '',
+        targetName: varCase.targetName || '',
+      },
+
+      webpush: {
+        fcmOptions: {
+          link:
+            'https://pierpaolo97.github.io/bestemmiometro/',
+        },
+
+        notification: {
+          title,
+          body,
+
+          tag:
+            `bestemmiometro-var-result-${varCase.eventId}`,
+
+          icon:
+            'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+
+          badge:
+            'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+        },
+      },
+    })
+
+  console.log(
+    `Notifica esito VAR inviata. Successi: ${response.successCount}, fallimenti: ${response.failureCount}`
+  )
+
+  const invalidTokens = []
+
+  response.responses.forEach((item, index) => {
+    if (item.success) return
+
+    const errorCode = item.error?.code
+
+    console.error(
+      `Errore notifica esito VAR token ${index}:`,
+      errorCode,
+      item.error?.message
+    )
+
+    if (
+      errorCode ===
+        'messaging/registration-token-not-registered' ||
+      errorCode ===
+        'messaging/invalid-registration-token'
+    ) {
+      invalidTokens.push(tokens[index])
+    }
+  })
+
+  if (!invalidTokens.length) {
+    return
+  }
+
+  const batch = db.batch()
+
+  recipients
+    .filter((user) =>
+      invalidTokens.includes(user.notificationToken)
+    )
+    .forEach((user) => {
+      const userRef = db
+        .collection('users')
+        .doc(user.id)
+
+      batch.update(userRef, {
+        notificationToken: null,
+        notificationsEnabled: false,
+        updatedAt: new Date(),
+      })
+    })
+
+  await batch.commit()
+
+  console.log(
+    `${invalidTokens.length} token non validi rimossi dopo l'esito del VAR.`
+  )
+}
+
 async function finalizeVarCase(varCaseRef, varCase, result) {
   const db = getFirestore()
   const eventRef = db.collection('events').doc(varCase.eventId)
 
-  await db.runTransaction(async (transaction) => {
-    const latestVarSnapshot = await transaction.get(varCaseRef)
+  const finalizationResult = await db.runTransaction(
+    async (transaction) => {
+      const latestVarSnapshot =
+        await transaction.get(varCaseRef)
 
-    if (!latestVarSnapshot.exists) return
+      if (!latestVarSnapshot.exists) {
+        return {
+          finalized: false,
+          reason: 'VAR_NOT_FOUND',
+        }
+      }
 
-    const latestVar = latestVarSnapshot.data()
+      const latestVar = latestVarSnapshot.data()
 
-    if (latestVar.status !== 'open') return
+      // Impedisce notifiche e chiusure duplicate.
+      if (latestVar.status !== 'open') {
+        return {
+          finalized: false,
+          reason: 'VAR_ALREADY_CLOSED',
+        }
+      }
 
-    const status = result === 'approved'
-      ? 'approved'
-      : 'rejected'
+      const status =
+        result === 'approved'
+          ? 'approved'
+          : 'rejected'
 
-    transaction.update(varCaseRef, {
-      status,
-      result,
-      resolvedAt: new Date(),
-      updatedAt: new Date(),
-    })
+      const now = new Date()
 
-    if (result === 'approved') {
-      transaction.update(eventRef, {
-        cancelledByVar: true,
-        varStatus: 'approved',
-        varResolvedAt: new Date(),
-        updatedAt: new Date(),
+      transaction.update(varCaseRef, {
+        status,
+        result,
+        resolvedAt: now,
+        updatedAt: now,
       })
-    } else {
-      transaction.update(eventRef, {
-        cancelledByVar: false,
-        varStatus: 'rejected',
-        varResolvedAt: new Date(),
-        updatedAt: new Date(),
-      })
+
+      if (result === 'approved') {
+        transaction.update(eventRef, {
+          cancelledByVar: true,
+          varStatus: 'approved',
+          varResolvedAt: now,
+          updatedAt: now,
+        })
+      } else {
+        transaction.update(eventRef, {
+          cancelledByVar: false,
+          varStatus: 'rejected',
+          varResolvedAt: now,
+          updatedAt: now,
+        })
+      }
+
+      return {
+        finalized: true,
+        varCase: latestVar,
+      }
     }
-  })
+  )
+
+  if (!finalizationResult.finalized) {
+    console.log(
+      `VAR non finalizzato: ${finalizationResult.reason}`
+    )
+    return
+  }
+
+  try {
+    await notifyVarResult(
+      finalizationResult.varCase,
+      result
+    )
+
+    console.log(
+      `Notifica esito VAR inviata: ${result}`
+    )
+  } catch (error) {
+    // Il VAR rimane correttamente chiuso anche se la push fallisce.
+    console.error(
+      'Errore invio notifica esito VAR:',
+      error
+    )
+  }
 }
 
 exports.resolveVarOnVote = onDocumentUpdated(
