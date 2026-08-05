@@ -1,0 +1,57 @@
+{
+  "projectId": "bestemmiometro-3d8aa",
+  "collection": "varCases",
+  "exportedAt": "2026-08-03T19:28:06.622Z",
+  "documentCount": 1,
+  "documents": [
+    {
+      "id": "G7XEyq1kq1iKaNkUWwwM",
+      "path": "varCases/G7XEyq1kq1iKaNkUWwwM",
+      "data": {
+        "teamKey": "4store-SL",
+        "eventId": "G7XEyq1kq1iKaNkUWwwM",
+        "eventType": "superbestemmia",
+        "eventDescription": "Anziché lavorare passa la giornata ad osservare i miei stati su Teams",
+        "challengeReason": "ancora ancora bestemmia, super mi sembra esagerato.",
+        "targetId": "mWYoCd5craVRPr3x1o1R",
+        "targetName": "Andrea",
+        "assignedById": "vIvZC3G7PdJXl9i9knjl",
+        "assignedByName": "Fede M",
+        "challengedById": "mWYoCd5craVRPr3x1o1R",
+        "challengedByName": "Andrea",
+        "quarterKey": "2026-Q3",
+        "eligibleVoterIds": [
+          "Wfs1qJHg2H4ZWwuMmZL9",
+          "3YHA6F9sAQkhGyoDV2ws",
+          "HfTg7RgVobZulWQ72nsR",
+          "kn2x18iGcxeWNmcUwtJH",
+          "Q0S4q1Uu2imId3eq8mCN",
+          "1vxAUDfs25wCk0VHDCr6"
+        ],
+        "requiredApprovals": 4,
+        "expiresAt": {
+          "__type": "timestamp",
+          "value": "2026-07-31T07:50:02.900Z"
+        },
+        "createdAt": {
+          "__type": "timestamp",
+          "value": "2026-07-28T07:50:02.951Z"
+        },
+        "votes": {
+          "Wfs1qJHg2H4ZWwuMmZL9": "approve"
+        },
+        "result": "rejected",
+        "resolvedAt": {
+          "__type": "timestamp",
+          "value": "2026-08-01T15:11:06.468Z"
+        },
+        "status": "rejected",
+        "updatedAt": {
+          "__type": "timestamp",
+          "value": "2026-08-01T15:11:06.468Z"
+        }
+      },
+      "subcollections": {}
+    }
+  ]
+}

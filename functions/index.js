@@ -388,7 +388,7 @@ exports.resolveVarOnVote = onDocumentUpdated(
 )
 
 exports.finalizeExpiredVarCases = onSchedule(
-  'every 1 hours',
+  'every 5 minutes',
   async () => {
     const db = getFirestore()
     const now = new Date()
