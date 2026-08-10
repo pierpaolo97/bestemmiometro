@@ -16,15 +16,20 @@ const {
 
 initializeApp()
 
-async function getAuthenticatedProfile(
+
+
+async function getAuthenticatedTeamProfile(
   transaction,
   db,
-  authUid
+  authUid,
+  teamId
 ) {
   const profileQuery = db
     .collection('users')
     .where('authUid', '==', authUid)
-    .limit(2)
+    .where('teamId', '==', teamId)
+    .where('accountStatus', '==', 'active')
+    .limit(1)
 
   const profileSnapshot =
     await transaction.get(profileQuery)
@@ -32,14 +37,7 @@ async function getAuthenticatedProfile(
   if (profileSnapshot.empty) {
     throw new HttpsError(
       'permission-denied',
-      'Nessun profilo collegato a questo account.'
-    )
-  }
-
-  if (profileSnapshot.size > 1) {
-    throw new HttpsError(
-      'failed-precondition',
-      'L’account risulta collegato a più profili.'
+      'Non fai parte di questo gruppo.'
     )
   }
 
@@ -662,28 +660,7 @@ exports.approveAccountLink = onCall(
 
     const result = await db.runTransaction(
       async (transaction) => {
-        /*
-         * Tutte le letture vengono eseguite prima
-         * delle scritture.
-         */
-
-        const reviewer =
-          await getAuthenticatedProfile(
-            transaction,
-            db,
-            request.auth.uid
-          )
-
-        if (
-          reviewer.accessRole !== 'maintainer' &&
-          reviewer.accessRole !== 'owner'
-        ) {
-          throw new HttpsError(
-            'permission-denied',
-            'Solo owner e maintainer possono approvare.'
-          )
-        }
-
+        // 1. Leggiamo prima la richiesta
         const linkRequestSnapshot =
           await transaction.get(linkRequestRef)
 
@@ -715,12 +692,22 @@ exports.approveAccountLink = onCall(
           )
         }
 
+        // 2. Troviamo il reviewer NEL TEAM corretto
+        const reviewer =
+          await getAuthenticatedTeamProfileByKey(
+            transaction,
+            db,
+            request.auth.uid,
+            linkRequest.teamKey
+          )
+
         if (
-          reviewer.teamKey !== linkRequest.teamKey
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
         ) {
           throw new HttpsError(
             'permission-denied',
-            'La richiesta appartiene a un altro team.'
+            'Solo owner e maintainer possono approvare.'
           )
         }
 
@@ -734,6 +721,7 @@ exports.approveAccountLink = onCall(
           )
         }
 
+        // 3. Profilo storico da collegare
         const legacyUserRef = db
           .collection('users')
           .doc(linkRequest.legacyUserId)
@@ -752,7 +740,8 @@ exports.approveAccountLink = onCall(
           legacyUserSnapshot.data()
 
         if (
-          legacyUser.teamKey !== reviewer.teamKey
+          legacyUser.teamKey !==
+          linkRequest.teamKey
         ) {
           throw new HttpsError(
             'permission-denied',
@@ -771,28 +760,39 @@ exports.approveAccountLink = onCall(
           )
         }
 
-        const claimedAccountQuery = db
+        /*
+         * Multi-team:
+         * lo stesso Google UID PUÒ esistere in altri gruppi.
+         * Dobbiamo impedire soltanto un secondo profilo
+         * nello STESSO team.
+         */
+        const existingTeamMembershipQuery = db
           .collection('users')
           .where(
             'authUid',
             '==',
             linkRequest.requestedByUid
           )
+          .where(
+            'teamKey',
+            '==',
+            linkRequest.teamKey
+          )
           .limit(1)
 
-        const claimedAccountSnapshot =
+        const existingTeamMembershipSnapshot =
           await transaction.get(
-            claimedAccountQuery
+            existingTeamMembershipQuery
           )
 
         if (
-          !claimedAccountSnapshot.empty &&
-          claimedAccountSnapshot.docs[0].id !==
+          !existingTeamMembershipSnapshot.empty &&
+          existingTeamMembershipSnapshot.docs[0].id !==
             legacyUserRef.id
         ) {
           throw new HttpsError(
             'already-exists',
-            'Questo account Google è già collegato a un altro profilo.'
+            'Questo account Google è già collegato a un profilo di questo gruppo.'
           )
         }
 
@@ -820,8 +820,12 @@ exports.approveAccountLink = onCall(
           status: 'approved',
 
           reviewedAt: now,
-          reviewedByUid: request.auth.uid,
-          reviewedByUserId: reviewer.id,
+          reviewedByUid:
+            request.auth.uid,
+
+          reviewedByUserId:
+            reviewer.id,
+
           reviewedByName:
             reviewer.username || null,
 
@@ -829,7 +833,9 @@ exports.approveAccountLink = onCall(
         })
 
         return {
-          legacyUserId: legacyUserRef.id,
+          legacyUserId:
+            legacyUserRef.id,
+
           legacyUsername:
             legacyUser.username || null,
         }
@@ -875,23 +881,7 @@ exports.rejectAccountLink = onCall(
 
     const result = await db.runTransaction(
       async (transaction) => {
-        const reviewer =
-          await getAuthenticatedProfile(
-            transaction,
-            db,
-            request.auth.uid
-          )
-
-        if (
-          reviewer.accessRole !== 'maintainer' &&
-          reviewer.accessRole !== 'owner'
-        ) {
-          throw new HttpsError(
-            'permission-denied',
-            'Solo owner e maintainer possono rifiutare.'
-          )
-        }
-
+        // 1. Prima leggiamo la richiesta
         const linkRequestSnapshot =
           await transaction.get(linkRequestRef)
 
@@ -912,12 +902,29 @@ exports.rejectAccountLink = onCall(
           )
         }
 
+        if (!linkRequest.teamKey) {
+          throw new HttpsError(
+            'failed-precondition',
+            'teamKey mancante nella richiesta.'
+          )
+        }
+
+        // 2. Reviewer nel team corretto
+        const reviewer =
+          await getAuthenticatedTeamProfileByKey(
+            transaction,
+            db,
+            request.auth.uid,
+            linkRequest.teamKey
+          )
+
         if (
-          reviewer.teamKey !== linkRequest.teamKey
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
         ) {
           throw new HttpsError(
             'permission-denied',
-            'La richiesta appartiene a un altro team.'
+            'Solo owner e maintainer possono rifiutare.'
           )
         }
 
@@ -938,8 +945,12 @@ exports.rejectAccountLink = onCall(
           status: 'rejected',
 
           reviewedAt: now,
-          reviewedByUid: request.auth.uid,
-          reviewedByUserId: reviewer.id,
+          reviewedByUid:
+            request.auth.uid,
+
+          reviewedByUserId:
+            reviewer.id,
+
           reviewedByName:
             reviewer.username || null,
 
@@ -959,3 +970,352 @@ exports.rejectAccountLink = onCall(
     }
   }
 )
+
+exports.approveJoinRequest = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const joinRequestRef = db
+      .collection('joinRequests')
+      .doc(requestId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        // 1. Prima leggiamo la richiesta
+        const joinRequestSnapshot =
+          await transaction.get(joinRequestRef)
+
+        if (!joinRequestSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Richiesta non trovata.'
+          )
+        }
+
+        const joinRequest =
+          joinRequestSnapshot.data()
+
+        if (joinRequest.status !== 'pending') {
+          throw new HttpsError(
+            'failed-precondition',
+            'Richiesta già gestita.'
+          )
+        }
+
+        if (
+          !joinRequest.teamId ||
+          !joinRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Richiesta incompleta.'
+          )
+        }
+
+        // 2. Cerchiamo il profilo del reviewer
+        // SOLTANTO nel team della richiesta
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            joinRequest.teamId
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono approvare.'
+          )
+        }
+
+        // 3. Verifichiamo che non sia già membro
+        const existingMembershipQuery = db
+          .collection('users')
+          .where(
+            'authUid',
+            '==',
+            joinRequest.requestedByUid
+          )
+          .where(
+            'teamId',
+            '==',
+            joinRequest.teamId
+          )
+          .limit(1)
+
+        const existingMembershipSnapshot =
+          await transaction.get(
+            existingMembershipQuery
+          )
+
+        if (!existingMembershipSnapshot.empty) {
+          throw new HttpsError(
+            'already-exists',
+            'L’utente fa già parte del gruppo.'
+          )
+        }
+
+        const membershipRef =
+          db.collection('users').doc()
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        const displayName =
+          joinRequest.requestedByName ||
+          joinRequest.requestedByEmail ||
+          'Giocatore'
+
+        const nameParts =
+          displayName.trim().split(/\s+/)
+
+        const firstName =
+          nameParts[0] || displayName
+
+        const lastName =
+          nameParts.slice(1).join(' ')
+
+        transaction.set(
+          membershipRef,
+          {
+            authUid:
+              joinRequest.requestedByUid,
+
+            teamId:
+              joinRequest.teamId,
+
+            teamKey:
+              joinRequest.teamKey,
+
+            teamName:
+              joinRequest.teamName,
+
+            username: firstName,
+
+            firstName,
+            lastName,
+
+            email:
+              joinRequest.requestedByEmail ||
+              null,
+
+            photoURL:
+              joinRequest.requestedByPhotoURL ||
+              null,
+
+            role: 'default',
+            accessRole: 'player',
+            accountStatus: 'active',
+
+            createdAt: now,
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          joinRequestRef,
+          {
+            status: 'approved',
+
+            membershipId:
+              membershipRef.id,
+
+            reviewedAt: now,
+            reviewedByUid:
+              request.auth.uid,
+
+            reviewedByUserId:
+              reviewer.id,
+
+            reviewedByName:
+              reviewer.username || null,
+
+            updatedAt: now,
+          }
+        )
+
+        return {
+          membershipId:
+            membershipRef.id,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
+  }
+)
+
+exports.rejectJoinRequest = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const joinRequestRef = db
+      .collection('joinRequests')
+      .doc(requestId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        // Prima leggiamo la richiesta
+        const snapshot =
+          await transaction.get(
+            joinRequestRef
+          )
+
+        if (!snapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Richiesta non trovata.'
+          )
+        }
+
+        const joinRequest =
+          snapshot.data()
+
+        if (
+          joinRequest.status !== 'pending'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Richiesta già gestita.'
+          )
+        }
+
+        if (!joinRequest.teamId) {
+          throw new HttpsError(
+            'failed-precondition',
+            'teamId mancante nella richiesta.'
+          )
+        }
+
+        // Poi troviamo la membership corretta
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            joinRequest.teamId
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono rifiutare.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          joinRequestRef,
+          {
+            status: 'rejected',
+
+            reviewedAt: now,
+            reviewedByUid:
+              request.auth.uid,
+
+            reviewedByUserId:
+              reviewer.id,
+
+            reviewedByName:
+              reviewer.username || null,
+
+            updatedAt: now,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+async function getAuthenticatedTeamProfileByKey(
+  transaction,
+  db,
+  authUid,
+  teamKey
+) {
+  const profileQuery = db
+    .collection('users')
+    .where('authUid', '==', authUid)
+    .where('teamKey', '==', teamKey)
+    .where('accountStatus', '==', 'active')
+    .limit(1)
+
+  const profileSnapshot =
+    await transaction.get(profileQuery)
+
+  if (profileSnapshot.empty) {
+    throw new HttpsError(
+      'permission-denied',
+      'Non fai parte di questo gruppo.'
+    )
+  }
+
+  const profileDocument =
+    profileSnapshot.docs[0]
+
+  return {
+    id: profileDocument.id,
+    ref: profileDocument.ref,
+    ...profileDocument.data(),
+  }
+}

@@ -105,9 +105,27 @@ export default function App() {
     setReviewingAccountLinkId,
   ] = useState(null)
 
-  const pendingAccountRequests = useMemo(() => {
-    return pendingAccountLinkRequests.length
-  }, [pendingAccountLinkRequests])
+  const isOwner = currentUser?.accessRole === 'owner'
+
+  const isMaintainer =
+    currentUser?.accessRole === 'maintainer' ||
+    currentUser?.accessRole === 'owner'
+
+  const [pendingJoinRequests, setPendingJoinRequests] = useState([])
+  const [reviewingJoinRequestId, setReviewingJoinRequestId] = useState(null)
+
+  const pendingProfileRequests = useMemo(() => {
+    if (!isMaintainer) return 0
+
+    return (
+      pendingAccountLinkRequests.length +
+      pendingJoinRequests.length
+    )
+  }, [
+    isMaintainer,
+    pendingAccountLinkRequests,
+    pendingJoinRequests,
+  ])
 
   const approveAccountLinkCallable = useMemo(
     () =>
@@ -123,6 +141,24 @@ export default function App() {
       httpsCallable(
         functions,
         'rejectAccountLink'
+      ),
+    []
+  )
+
+  const approveJoinRequestCallable = useMemo(
+    () =>
+      httpsCallable(
+        functions,
+        'approveJoinRequest'
+      ),
+    []
+  )
+
+  const rejectJoinRequestCallable = useMemo(
+    () =>
+      httpsCallable(
+        functions,
+        'rejectJoinRequest'
       ),
     []
   )
@@ -187,15 +223,16 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const [historyModal, setHistoryModal] = useState(null)
 
+  const [showJoinTeam, setShowJoinTeam] = useState(false)
+  const [joinTeamCode, setJoinTeamCode] = useState('')
+  const [joinTeamPreview, setJoinTeamPreview] = useState(null)
+  const [isSearchingJoinTeam, setIsSearchingJoinTeam] = useState(false)
+  const [isRequestingJoin, setIsRequestingJoin] = useState(false)
+
   const toastTimeoutRef = useRef(null)
 
-  const isOwner = currentUser?.accessRole === 'owner'
-
-  const isMaintainer =
-    currentUser?.accessRole === 'maintainer' ||
-    currentUser?.accessRole === 'owner'
-      const [showNotificationModal, setShowNotificationModal] = useState(false)
-    const [activeTab, setActiveTab] = useState('home')
+  const [showNotificationModal, setShowNotificationModal] = useState(false)
+  const [activeTab, setActiveTab] = useState('home')
 
   async function enableNotifications() {
     setShowNotificationModal(false)
@@ -751,6 +788,52 @@ export default function App() {
     return unsubscribe
   }, [firebaseUser, currentUser])
 
+  useEffect(() => {
+    if (
+      !currentUser?.teamId ||
+      !isMaintainer
+    ) {
+      setPendingJoinRequests([])
+      return
+    }
+
+    const requestsQuery = query(
+      collection(db, 'joinRequests'),
+      where(
+        'teamId',
+        '==',
+        currentUser.teamId
+      ),
+      where('status', '==', 'pending')
+    )
+
+    const unsubscribe = onSnapshot(
+      requestsQuery,
+      (snapshot) => {
+        const requests = snapshot.docs
+          .map((document) => ({
+            id: document.id,
+            ...document.data(),
+          }))
+          .sort(
+            (a, b) =>
+              (a.createdAt?.seconds || 0) -
+              (b.createdAt?.seconds || 0)
+          )
+
+        setPendingJoinRequests(requests)
+      },
+      (error) => {
+        console.error(
+          'Errore richieste ingresso:',
+          error
+        )
+      }
+    )
+
+    return unsubscribe
+  }, [currentUser, isMaintainer])
+
   const ranking = useMemo(() => {
     return users
       .map((user) => ({
@@ -812,6 +895,76 @@ export default function App() {
 
     localStorage.setItem(SESSION_KEY, JSON.stringify(matchedUser))
     setCurrentUser(matchedUser)
+  }
+
+  async function requestJoinTeam() {
+    if (
+      !firebaseUser ||
+      !joinTeamPreview ||
+      isRequestingJoin
+    ) {
+      return
+    }
+
+    setIsRequestingJoin(true)
+
+    try {
+      const requestId = [
+        firebaseUser.uid,
+        joinTeamPreview.id,
+      ].join('__')
+
+      const requestRef = doc(
+        db,
+        'joinRequests',
+        requestId
+      )
+
+      await setDoc(requestRef, {
+        teamId: joinTeamPreview.id,
+        teamName: joinTeamPreview.name,
+        teamKey: joinTeamPreview.inviteCode,
+
+        requestedByUid: firebaseUser.uid,
+        requestedByEmail:
+          firebaseUser.email || null,
+        requestedByName:
+          firebaseUser.displayName || null,
+        requestedByPhotoURL:
+          firebaseUser.photoURL || null,
+
+        status: 'pending',
+
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+
+        reviewedAt: null,
+        reviewedByUid: null,
+        reviewedByUserId: null,
+        reviewedByName: null,
+      })
+
+      setShowJoinTeam(false)
+      setJoinTeamPreview(null)
+      setJoinTeamCode('')
+
+      showToast(
+        'Richiesta di ingresso inviata.',
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore richiesta ingresso:',
+        error
+      )
+
+      showToast(
+        'Errore durante l’invio della richiesta.',
+        'danger'
+      )
+    } finally {
+      setIsRequestingJoin(false)
+    }
   }
 
   async function saveTeamSettings(event) {
@@ -987,6 +1140,93 @@ export default function App() {
       )
     } finally {
       setReviewingAccountLinkId(null)
+    }
+  }
+
+  async function approveJoinRequest(request) {
+    if (
+      !isMaintainer ||
+      reviewingJoinRequestId
+    ) {
+      return
+    }
+
+    setReviewingJoinRequestId(request.id)
+
+    try {
+      await approveJoinRequestCallable({
+        requestId: request.id,
+      })
+
+      showToast(
+        'Giocatore aggiunto al gruppo.',
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore approvazione ingresso:',
+        error
+      )
+
+      const messages = {
+        'functions/unauthenticated':
+          'Devi essere autenticato.',
+
+        'functions/permission-denied':
+          'Non sei autorizzato.',
+
+        'functions/not-found':
+          'La richiesta non esiste più.',
+
+        'functions/already-exists':
+          'Questo giocatore fa già parte del gruppo.',
+
+        'functions/failed-precondition':
+          'La richiesta è già stata gestita.',
+      }
+
+      showToast(
+        messages[error.code] ||
+          'Errore durante l’approvazione.',
+        'danger'
+      )
+    } finally {
+      setReviewingJoinRequestId(null)
+    }
+  }
+
+  async function rejectJoinRequest(request) {
+    if (
+      !isMaintainer ||
+      reviewingJoinRequestId
+    ) {
+      return
+    }
+
+    setReviewingJoinRequestId(request.id)
+
+    try {
+      await rejectJoinRequestCallable({
+        requestId: request.id,
+      })
+
+      showToast(
+        'Richiesta rifiutata.',
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore rifiuto ingresso:',
+        error
+      )
+
+      showToast(
+        error.message ||
+          'Errore durante il rifiuto.',
+        'danger'
+      )
+    } finally {
+      setReviewingJoinRequestId(null)
     }
   }
 
@@ -1239,6 +1479,79 @@ export default function App() {
     }
   }  
 
+  async function searchTeamByInviteCode(event) {
+    event.preventDefault()
+
+    if (!firebaseUser) return
+
+    const code = joinTeamCode
+      .trim()
+      .toUpperCase()
+
+    if (!code) {
+      showToast(
+        'Inserisci un codice invito.',
+        'danger'
+      )
+      return
+    }
+
+    setIsSearchingJoinTeam(true)
+    setJoinTeamPreview(null)
+
+    try {
+      const teamsQuery = query(
+        collection(db, 'teams'),
+        where('inviteCode', '==', code)
+      )
+
+      const snapshot = await getDocs(teamsQuery)
+
+      if (snapshot.empty) {
+        showToast(
+          'Nessun gruppo trovato con questo codice.',
+          'danger'
+        )
+        return
+      }
+
+      const teamDocument = snapshot.docs[0]
+
+      const team = {
+        id: teamDocument.id,
+        ...teamDocument.data(),
+      }
+
+      const alreadyMember =
+        userMemberships.some(
+          (membership) =>
+            membership.teamId === team.id
+        )
+
+      if (alreadyMember) {
+        showToast(
+          'Fai già parte di questo gruppo.',
+          'danger'
+        )
+        return
+      }
+
+      setJoinTeamPreview(team)
+    } catch (error) {
+      console.error(
+        'Errore ricerca gruppo:',
+        error
+      )
+
+      showToast(
+        'Errore durante la ricerca del gruppo.',
+        'danger'
+      )
+    } finally {
+      setIsSearchingJoinTeam(false)
+    }
+  }
+  
   function generateTeamCode() {
     const alphabet =
       'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -2561,53 +2874,71 @@ export default function App() {
                 type="button"
                 className="secondary-option-button"
                 onClick={() => {
-                  showToast(
-                    'La creazione dei gruppi sarà disponibile a breve.',
-                    'success'
-                  )
+                  console.log('CLICK CREA GRUPPO')
+                  setNewTeamName('')
+                  setNewTeamUsername('')
+                  setShowCreateTeam(true)
                 }}
               >
                 Crea un nuovo gruppo
               </button>
+
+              <button
+                type="button"
+                className="secondary-option-button"
+                onClick={() => {
+                  console.log('CLICK ENTRA GRUPPO')
+                  setJoinTeamCode('')
+                  setJoinTeamPreview(null)
+                  setShowJoinTeam(true)
+                }}
+              >
+                Entra in un gruppo esistente
+              </button>
+
             </div>
           )}
-          <form
-            className="login-form"
-            onSubmit={searchLegacyProfiles}
-          >
-            <input
-              type="text"
-              placeholder="Team key"
-              value={linkTeamKey}
-              onChange={(event) =>
-                setLinkTeamKey(event.target.value)
-              }
-            />
-
-            <button
-              type="submit"
-              disabled={isSearchingProfiles}
-            >
-              {isSearchingProfiles
-                ? 'Ricerca...'
-                : 'Cerca profili'}
-            </button>
-          </form>
 
           {showLegacyRecovery && (
-          <button 
-            type="button"
-            className="back-button"
-            onClick={() => {
-              setShowLegacyRecovery(false)
-              setLinkCandidates([])
-              setSelectedLegacyUserId('')
-              setLinkSearchError('')
-              setLinkTeamKey('')
-            }}
-          >
-            Torna alle opzioni
-          </button>)}
+            <>
+              <form
+                className="login-form"
+                onSubmit={searchLegacyProfiles}
+              >
+                <input
+                  type="text"
+                  placeholder="Team key"
+                  value={linkTeamKey}
+                  onChange={(event) =>
+                    setLinkTeamKey(event.target.value)
+                  }
+                />
+
+                <button
+                  type="submit"
+                  disabled={isSearchingProfiles}
+                >
+                  {isSearchingProfiles
+                    ? 'Ricerca...'
+                    : 'Cerca profili'}
+                </button>
+              </form>
+
+              <button
+                type="button"
+                className="back-button"
+                onClick={() => {
+                  setShowLegacyRecovery(false)
+                  setLinkCandidates([])
+                  setSelectedLegacyUserId('')
+                  setLinkSearchError('')
+                  setLinkTeamKey('')
+                }}
+              >
+                Torna alle opzioni
+              </button>
+            </>
+          )}
 
           {linkSearchError && (
             <p className="error-message">
@@ -2657,6 +2988,148 @@ export default function App() {
           )}
 
         </section>
+
+        {showCreateTeam && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowCreateTeam(false)}
+          >
+            <div
+              className="modal create-team-modal"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setShowCreateTeam(false)}
+              >
+                <X />
+              </button>
+
+              <h2>Crea un nuovo gruppo</h2>
+
+              <p>
+                Sarai automaticamente owner del nuovo gruppo.
+              </p>
+
+              <form
+                className="create-team-form"
+                onSubmit={createTeam}
+              >
+                <label>
+                  <span>Nome gruppo</span>
+
+                  <input
+                    type="text"
+                    value={newTeamName}
+                    onChange={(event) =>
+                      setNewTeamName(event.target.value)
+                    }
+                    placeholder="Es. Team Progetto X"
+                  />
+                </label>
+
+                <label>
+                  <span>Il tuo username</span>
+
+                  <input
+                    type="text"
+                    value={newTeamUsername}
+                    onChange={(event) =>
+                      setNewTeamUsername(event.target.value)
+                    }
+                    placeholder="Come vuoi apparire in classifica"
+                  />
+                </label>
+
+                <button
+                  type="submit"
+                  disabled={
+                    isCreatingTeam ||
+                    !newTeamName.trim() ||
+                    !newTeamUsername.trim()
+                  }
+                >
+                  {isCreatingTeam
+                    ? 'Creazione...'
+                    : 'Crea gruppo'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showJoinTeam && (
+          <div
+            className="modal-backdrop"
+            onClick={() => setShowJoinTeam(false)}
+          >
+            <div
+              className="modal join-team-modal"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setShowJoinTeam(false)}
+              >
+                <X />
+              </button>
+
+              <h2>Entra in un gruppo</h2>
+
+              <p>
+                Inserisci la Team Key del gruppo.
+              </p>
+
+              <form
+                className="join-team-form"
+                onSubmit={searchTeamByInviteCode}
+              >
+                <input
+                  type="text"
+                  value={joinTeamCode}
+                  onChange={(event) =>
+                    setJoinTeamCode(
+                      event.target.value.toUpperCase()
+                    )
+                  }
+                  placeholder="Team Key"
+                />
+
+                <button
+                  type="submit"
+                  disabled={isSearchingJoinTeam}
+                >
+                  {isSearchingJoinTeam
+                    ? 'Ricerca...'
+                    : 'Cerca gruppo'}
+                </button>
+              </form>
+
+              {joinTeamPreview && (
+                <div className="join-team-preview">
+                  <span>Gruppo trovato</span>
+
+                  <strong>
+                    {joinTeamPreview.name}
+                  </strong>
+
+                  <button
+                    type="button"
+                    disabled={isRequestingJoin}
+                    onClick={requestJoinTeam}
+                  >
+                    {isRequestingJoin
+                      ? 'Invio richiesta...'
+                      : 'Richiedi accesso'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
       </main>
     )
   }
@@ -2813,7 +3286,7 @@ export default function App() {
           className={
             activeTab === 'profile'
               ? 'nav-item active'
-              : isMaintainer && pendingAccountRequests > 0
+              : isMaintainer && pendingProfileRequests > 0
                 ? 'nav-item attention'
                 : 'nav-item'
           }
@@ -2823,9 +3296,9 @@ export default function App() {
             <UserRound size={21} />
 
             {isMaintainer &&
-              pendingAccountRequests > 0 && (
+              pendingProfileRequests > 0 && (
                 <span className="nav-badge">
-                  {pendingAccountRequests}
+                  {pendingProfileRequests}
                 </span>
               )}
           </span>
@@ -2956,55 +3429,82 @@ export default function App() {
               </form>
             </section>
 
-            {isMaintainer && (
-              <section className="panel add-user-panel">
-                <div className="panel-title">
-                  <Users />
-                  <div>
-                    <h2>Aggiungi giocatore</h2>
-                    <p className="panel-subtitle">
-                      Crea un nuovo membro del team
-                    </p>
-                  </div>
+          {isMaintainer && activeTeam && (
+            <section className="panel invite-panel">
+              <div className="panel-title">
+                <UserPlus />
+
+                <div>
+                  <h2>Invita giocatori</h2>
+
+                  <p className="panel-subtitle">
+                    Condividi il codice del gruppo con chi vuoi aggiungere
+                  </p>
                 </div>
+              </div>
 
-                <form onSubmit={addUser} className="add-user-form">
-                  <input
-                    type="text"
-                    placeholder="Nome"
-                    value={newFirstName}
-                    onChange={(event) => setNewFirstName(event.target.value)}
-                  />
+              <div className="invite-code-card">
+                <span>Codice invito</span>
 
-                  <input
-                    type="text"
-                    placeholder="Cognome"
-                    value={newLastName}
-                    onChange={(event) => setNewLastName(event.target.value)}
-                  />
+                <strong>
+                  {activeTeam.inviteCode}
+                </strong>
 
-                  <input
-                    type="text"
-                    placeholder="Username in classifica"
-                    value={newUsername}
-                    onChange={(event) => setNewUsername(event.target.value)}
-                  />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(
+                        activeTeam.inviteCode
+                      )
 
-                  <select
-                    value={newAccessRole}
-                    onChange={(event) => setNewAccessRole(event.target.value)}
-                  >
-                    <option value="player">Player</option>
-                    <option value="maintainer">Maintainer</option>
-                  </select>
+                      showToast(
+                        'Codice invito copiato.',
+                        'success'
+                      )
+                    } catch (error) {
+                      console.error(
+                        'Errore copia codice:',
+                        error
+                      )
 
-                  <button type="submit">
-                    <UserPlus size={18} />
-                    Aggiungi
-                  </button>
-                </form>
-              </section>
-            )}
+                      showToast(
+                        'Impossibile copiare il codice.',
+                        'danger'
+                      )
+                    }
+                  }}
+                >
+                  Copia codice
+                </button>
+              </div>
+
+              {navigator.share && (
+                <button
+                  type="button"
+                  className="share-invite-button"
+                  onClick={async () => {
+                    try {
+                      await navigator.share({
+                        title: activeTeam.name,
+                        text:
+                          `Entra nel gruppo "${activeTeam.name}" con il codice ${activeTeam.inviteCode}`,
+                      })
+                    } catch (error) {
+                      if (error.name !== 'AbortError') {
+                        console.error(
+                          'Errore condivisione:',
+                          error
+                        )
+                      }
+                    }
+                  }}
+                >
+                  Condividi invito
+                </button>
+              )}
+            </section>
+          )}
           </section>
         )}
 
@@ -3284,6 +3784,80 @@ export default function App() {
                   </div>
                 </section>
               )}
+            
+            {isMaintainer &&
+              pendingJoinRequests.length > 0 && (
+                <section className="panel">
+                  <div className="panel-title">
+                    <UserPlus />
+
+                    <div>
+                      <h2>Richieste di ingresso</h2>
+
+                      <p className="panel-subtitle">
+                        Persone che vogliono entrare nel gruppo
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="account-link-requests">
+                    {pendingJoinRequests.map(
+                      (request) => (
+                        <article
+                          className="account-link-request"
+                          key={request.id}
+                        >
+                          <div>
+                            <strong>
+                              {request.requestedByName ||
+                                request.requestedByEmail}
+                            </strong>
+
+                            <span>
+                              Vuole entrare nel gruppo
+                            </span>
+
+                            <small>
+                              {request.requestedByEmail}
+                            </small>
+                          </div>
+
+                          <div className="account-link-actions">
+                            <button
+                              type="button"
+                              className="account-link-reject-button"
+                              disabled={
+                                reviewingJoinRequestId ===
+                                request.id
+                              }
+                              onClick={() =>
+                                rejectJoinRequest(request)
+                              }
+                            >
+                              Rifiuta
+                            </button>
+
+                            <button
+                              type="button"
+                              className="account-link-approve-button"
+                              disabled={
+                                reviewingJoinRequestId ===
+                                request.id
+                              }
+                              onClick={() =>
+                                approveJoinRequest(request)
+                              }
+                            >
+                              Approva
+                            </button>
+                          </div>
+                        </article>
+                      )
+                    )}
+                  </div>
+                </section>
+              )}
+
             <section className="panel profile-card">
               <div className="profile-avatar">
                 {currentUser.username?.charAt(0)?.toUpperCase() || 'U'}
@@ -3463,6 +4037,26 @@ export default function App() {
                   </span>
                 </button>
               )}
+
+              <button
+                type="button"
+                className="profile-action-button"
+                onClick={() => {
+                  setJoinTeamCode('')
+                  setJoinTeamPreview(null)
+                  setShowJoinTeam(true)
+                }}
+              >
+                <UserPlus size={21} />
+
+                <span>
+                  <strong>Entra in un gruppo</strong>
+
+                  <small>
+                    Usa il codice invito ricevuto da un owner o maintainer
+                  </small>
+                </span>
+              </button>
 
               <button
                 type="button"
@@ -3793,6 +4387,83 @@ export default function App() {
                   : 'Crea gruppo'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showJoinTeam && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowJoinTeam(false)}
+        >
+          <div
+            className="modal join-team-modal"
+            onClick={(event) =>
+              event.stopPropagation()
+            }
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setShowJoinTeam(false)}
+            >
+              <X />
+            </button>
+
+            <h2>Entra in un gruppo</h2>
+
+            <p>
+              Inserisci la Team Key del gruppo a cui vuoi unirti.
+            </p>
+
+            <form
+              className="join-team-form"
+              onSubmit={searchTeamByInviteCode}
+            >
+              <input
+                type="text"
+                value={joinTeamCode}
+                onChange={(event) =>
+                  setJoinTeamCode(
+                    event.target.value.toUpperCase()
+                  )
+                }
+                placeholder="Team Key"
+              />
+
+              <button
+                type="submit"
+                disabled={isSearchingJoinTeam}
+              >
+                {isSearchingJoinTeam
+                  ? 'Ricerca...'
+                  : 'Cerca gruppo'}
+              </button>
+            </form>
+
+            {joinTeamPreview && (
+              <div className="join-team-preview">
+                <span>Gruppo trovato</span>
+
+                <strong>
+                  {joinTeamPreview.name}
+                </strong>
+
+                <small>
+                  Codice: {joinTeamPreview.inviteCode}
+                </small>
+
+                <button
+                  type="button"
+                  onClick={requestJoinTeam}
+                  disabled={isRequestingJoin}
+                >
+                  {isRequestingJoin
+                    ? 'Invio richiesta...'
+                    : 'Richiedi accesso'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

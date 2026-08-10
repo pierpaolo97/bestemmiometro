@@ -3612,3 +3612,106 @@ textarea {
 
   cursor: pointer;
 }
+
+.invite-code-card {
+  display: grid;
+  gap: 8px;
+
+  padding: 18px;
+
+  border: 1px solid #e7e5e4;
+  border-radius: 18px;
+
+  background: #fffdf8;
+
+  text-align: center;
+}
+
+.invite-code-card > span {
+  color: #78716c;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.invite-code-card > strong {
+  font-size: 30px;
+  letter-spacing: 5px;
+  color: #292524;
+}
+
+.invite-code-card button,
+.share-invite-button {
+  min-height: 46px;
+
+  border: 0;
+  border-radius: 14px;
+
+  background: #facc15;
+  color: #292524;
+
+  font: inherit;
+  font-weight: 800;
+
+  cursor: pointer;
+}
+
+.share-invite-button {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.join-team-form {
+  display: grid;
+  gap: 12px;
+
+  margin-top: 20px;
+}
+
+.join-team-form input {
+  min-height: 48px;
+  padding: 0 14px;
+
+  border: 1px solid #d6d3d1;
+  border-radius: 14px;
+
+  font: inherit;
+}
+
+.join-team-form button,
+.join-team-preview button {
+  min-height: 48px;
+
+  border: 0;
+  border-radius: 14px;
+
+  background: #facc15;
+  color: #292524;
+
+  font: inherit;
+  font-weight: 800;
+
+  cursor: pointer;
+}
+
+.join-team-preview {
+  display: grid;
+  gap: 8px;
+
+  margin-top: 20px;
+  padding: 16px;
+
+  border: 1px solid #e7e5e4;
+  border-radius: 16px;
+
+  background: #fffdf8;
+}
+
+.join-team-preview > span,
+.join-team-preview > small {
+  color: #78716c;
+  font-size: 13px;
+}
+
+.join-team-preview > strong {
+  font-size: 20px;
+}
