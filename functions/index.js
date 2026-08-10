@@ -3,11 +3,55 @@ const {
   onDocumentUpdated,
 } = require('firebase-functions/v2/firestore')
 const { initializeApp } = require('firebase-admin/app')
-const { getFirestore } = require('firebase-admin/firestore')
+const {
+  getFirestore,
+  FieldValue,
+} = require('firebase-admin/firestore')
 const { getMessaging } = require('firebase-admin/messaging')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
+const { 
+  onCall, 
+  HttpsError, 
+} = require('firebase-functions/v2/https')
 
 initializeApp()
+
+async function getAuthenticatedProfile(
+  transaction,
+  db,
+  authUid
+) {
+  const profileQuery = db
+    .collection('users')
+    .where('authUid', '==', authUid)
+    .limit(2)
+
+  const profileSnapshot =
+    await transaction.get(profileQuery)
+
+  if (profileSnapshot.empty) {
+    throw new HttpsError(
+      'permission-denied',
+      'Nessun profilo collegato a questo account.'
+    )
+  }
+
+  if (profileSnapshot.size > 1) {
+    throw new HttpsError(
+      'failed-precondition',
+      'L’account risulta collegato a più profili.'
+    )
+  }
+
+  const profileDocument =
+    profileSnapshot.docs[0]
+
+  return {
+    id: profileDocument.id,
+    ref: profileDocument.ref,
+    ...profileDocument.data(),
+  }
+}
 
 exports.notifyNewEvent = onDocumentCreated(
   'events/{eventId}',
@@ -583,5 +627,335 @@ exports.notifyNewVar = onDocumentCreated(
     console.log(
       `${invalidTokens.length} token non validi disabilitati.`
     )
+  }
+)
+
+exports.approveAccountLink = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso con Google.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const linkRequestRef = db
+      .collection('accountLinkRequests')
+      .doc(requestId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        /*
+         * Tutte le letture vengono eseguite prima
+         * delle scritture.
+         */
+
+        const reviewer =
+          await getAuthenticatedProfile(
+            transaction,
+            db,
+            request.auth.uid
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono approvare.'
+          )
+        }
+
+        const linkRequestSnapshot =
+          await transaction.get(linkRequestRef)
+
+        if (!linkRequestSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'La richiesta non esiste.'
+          )
+        }
+
+        const linkRequest =
+          linkRequestSnapshot.data()
+
+        if (linkRequest.status !== 'pending') {
+          throw new HttpsError(
+            'failed-precondition',
+            'La richiesta è già stata gestita.'
+          )
+        }
+
+        if (
+          !linkRequest.legacyUserId ||
+          !linkRequest.requestedByUid ||
+          !linkRequest.teamKey
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'La richiesta contiene dati incompleti.'
+          )
+        }
+
+        if (
+          reviewer.teamKey !== linkRequest.teamKey
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'La richiesta appartiene a un altro team.'
+          )
+        }
+
+        if (
+          reviewer.authUid ===
+          linkRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Non puoi approvare la tua richiesta.'
+          )
+        }
+
+        const legacyUserRef = db
+          .collection('users')
+          .doc(linkRequest.legacyUserId)
+
+        const legacyUserSnapshot =
+          await transaction.get(legacyUserRef)
+
+        if (!legacyUserSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Il profilo richiesto non esiste.'
+          )
+        }
+
+        const legacyUser =
+          legacyUserSnapshot.data()
+
+        if (
+          legacyUser.teamKey !== reviewer.teamKey
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Il profilo appartiene a un altro team.'
+          )
+        }
+
+        if (
+          legacyUser.authUid &&
+          legacyUser.authUid !==
+            linkRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Il profilo è già collegato a un altro account.'
+          )
+        }
+
+        const claimedAccountQuery = db
+          .collection('users')
+          .where(
+            'authUid',
+            '==',
+            linkRequest.requestedByUid
+          )
+          .limit(1)
+
+        const claimedAccountSnapshot =
+          await transaction.get(
+            claimedAccountQuery
+          )
+
+        if (
+          !claimedAccountSnapshot.empty &&
+          claimedAccountSnapshot.docs[0].id !==
+            legacyUserRef.id
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Questo account Google è già collegato a un altro profilo.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(legacyUserRef, {
+          authUid:
+            linkRequest.requestedByUid,
+
+          email:
+            linkRequest.requestedByEmail ||
+            null,
+
+          photoURL:
+            linkRequest.requestedByPhotoURL ||
+            null,
+
+          accountStatus: 'active',
+          accountLinkedAt: now,
+          updatedAt: now,
+        })
+
+        transaction.update(linkRequestRef, {
+          status: 'approved',
+
+          reviewedAt: now,
+          reviewedByUid: request.auth.uid,
+          reviewedByUserId: reviewer.id,
+          reviewedByName:
+            reviewer.username || null,
+
+          updatedAt: now,
+        })
+
+        return {
+          legacyUserId: legacyUserRef.id,
+          legacyUsername:
+            legacyUser.username || null,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
+  }
+)
+
+exports.rejectAccountLink = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso con Google.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const linkRequestRef = db
+      .collection('accountLinkRequests')
+      .doc(requestId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const reviewer =
+          await getAuthenticatedProfile(
+            transaction,
+            db,
+            request.auth.uid
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono rifiutare.'
+          )
+        }
+
+        const linkRequestSnapshot =
+          await transaction.get(linkRequestRef)
+
+        if (!linkRequestSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'La richiesta non esiste.'
+          )
+        }
+
+        const linkRequest =
+          linkRequestSnapshot.data()
+
+        if (linkRequest.status !== 'pending') {
+          throw new HttpsError(
+            'failed-precondition',
+            'La richiesta è già stata gestita.'
+          )
+        }
+
+        if (
+          reviewer.teamKey !== linkRequest.teamKey
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'La richiesta appartiene a un altro team.'
+          )
+        }
+
+        if (
+          request.auth.uid ===
+          linkRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Non puoi gestire la tua richiesta.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(linkRequestRef, {
+          status: 'rejected',
+
+          reviewedAt: now,
+          reviewedByUid: request.auth.uid,
+          reviewedByUserId: reviewer.id,
+          reviewedByName:
+            reviewer.username || null,
+
+          updatedAt: now,
+        })
+
+        return {
+          legacyUsername:
+            linkRequest.legacyUsername || null,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
   }
 )
