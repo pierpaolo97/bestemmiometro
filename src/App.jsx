@@ -1923,6 +1923,7 @@ export default function App() {
           activeTeam?.settings?.varDurationHours ?? 72,
       }
     }
+    
     const eventConfig = {
       bestemmia: {
         points: teamSettings.bestemmiaPoints,
@@ -2138,11 +2139,21 @@ export default function App() {
       return
     }
 
-    const quarterKey = getQuarterKey()
+    const resetPeriod =
+      activeTeam?.settings?.varResetPeriod ??
+      'quarter'
 
-    if (hasUsedVarThisQuarter()) {
+    const periodKey =
+      getVarPeriodKey(resetPeriod)
+
+    const varAllowance =
+      activeTeam?.settings?.varAllowance ?? 1
+
+    const userVars = getUsedVarCountInCurrentPeriod()
+
+    if (userVars >= varAllowance) {
       showToast(
-        'Hai già utilizzato il VAR in questo trimestre.',
+        'Hai esaurito i VAR disponibili per questo periodo.',
         'danger'
       )
       return
@@ -2170,14 +2181,21 @@ export default function App() {
       const usageId = [
         encodeURIComponent(currentUser.teamKey),
         currentUser.id,
-        quarterKey,
+        periodKey,
+        item.id,
       ].join('__')
 
       const usageRef = doc(db, 'varUsage', usageId)
       const eventRef = doc(db, 'events', item.id)
 
+      const varDurationHours =
+        activeTeam?.settings?.varDurationHours ?? 72
+
       const expiresAt = Timestamp.fromDate(
-        new Date(Date.now() + 72 * 60 * 60 * 1000)
+        new Date(
+          Date.now() +
+            varDurationHours * 60 * 60 * 1000
+        )
       )
 
       const eligibleVoterIds = eligibleVoters.map(
@@ -2208,8 +2226,9 @@ export default function App() {
         if (usageSnapshot.exists()) {
           throw new Error('VAR_ALREADY_USED')
         }
-
+        
         transaction.set(varCaseRef, {
+          teamId: currentUser.teamId,
           teamKey: currentUser.teamKey,
 
           eventId: item.id,
@@ -2227,9 +2246,8 @@ export default function App() {
 
           challengedById: currentUser.id,
           challengedByName: currentUser.username,
-
-          quarterKey,
-
+          periodKey,
+          resetPeriod,
           status: 'open',
           result: null,
 
@@ -2244,10 +2262,12 @@ export default function App() {
         })
 
         transaction.set(usageRef, {
+          teamId: currentUser.teamId,
           teamKey: currentUser.teamKey,
           userId: currentUser.id,
           username: currentUser.username,
-          quarterKey,
+          periodKey,
+          resetPeriod,
           varCaseId: item.id,
           eventId: item.id,
           createdAt: serverTimestamp(),
@@ -2266,9 +2286,10 @@ export default function App() {
       setActiveTab('var')
 
       showToast(
-        '🎥 VAR richiesto. Il team ha 3 giorni per votare.',
+        `🎥 VAR richiesto. Il team ha ${varDurationHours} ore per votare.`,
         'success'
       )
+
     } catch (error) {
       console.error('Errore richiesta VAR:', error)
 
@@ -2277,7 +2298,7 @@ export default function App() {
         VAR_ALREADY_EXISTS:
           'Questo evento è già stato sottoposto al VAR.',
         VAR_ALREADY_USED:
-          'Hai già utilizzato il VAR in questo trimestre.',
+          'Hai già utilizzato questo VAR.',
       }
 
       const isPermissionError =
@@ -2328,6 +2349,13 @@ export default function App() {
         }
 
         if (
+          currentData.expiresAt?.toDate &&
+          currentData.expiresAt.toDate().getTime() <= Date.now()
+        ) {
+          throw new Error('VAR_EXPIRED')
+        }
+
+        if (
           !currentData.eligibleVoterIds?.includes(currentUser.id)
         ) {
           throw new Error('NOT_ELIGIBLE')
@@ -2352,6 +2380,7 @@ export default function App() {
         VAR_NOT_FOUND: 'La contestazione non esiste più.',
         VAR_CLOSED: 'La votazione è già terminata.',
         NOT_ELIGIBLE: 'Non sei autorizzato a votare.',
+        VAR_EXPIRED: 'La votazione è scaduta.',
       }
 
       showToast(
@@ -2445,38 +2474,91 @@ export default function App() {
     return events.filter((event) => event.targetId === userId)
   }
 
-  function getQuarterKey(date = new Date()) {
+  function getVarPeriodKey(
+    resetPeriod,
+    date = new Date()
+  ) {
     const year = date.getFullYear()
-    const quarter = Math.floor(date.getMonth() / 3) + 1
 
-    return `${year}-Q${quarter}`
+    switch (resetPeriod) {
+      case 'month':
+        return `${year}-M${String(
+          date.getMonth() + 1
+        ).padStart(2, '0')}`
+
+      case 'quarter': {
+        const quarter =
+          Math.floor(date.getMonth() / 3) + 1
+
+        return `${year}-Q${quarter}`
+      }
+
+      case 'year':
+        return `${year}`
+
+      case 'never':
+        return 'never'
+
+      default: {
+        const quarter =
+          Math.floor(date.getMonth() / 3) + 1
+
+        return `${year}-Q${quarter}`
+      }
+    }
   }
 
   function getVarCaseForEvent(eventId) {
     return varCases.find((varCase) => varCase.eventId === eventId)
   }
 
-  function hasUsedVarThisQuarter() {
-    const currentQuarter = getQuarterKey()
+  function getUsedVarCountInCurrentPeriod() {
+    if (!currentUser) return 0
 
-    return varCases.some(
-      (varCase) =>
-        varCase.challengedById === currentUser.id &&
-        varCase.quarterKey === currentQuarter
-    )
+    const resetPeriod =
+      activeTeam?.settings?.varResetPeriod ??
+      'quarter'
+
+    const currentPeriodKey =
+      getVarPeriodKey(resetPeriod)
+
+    return varCases.filter((varCase) => {
+      if (
+        varCase.challengedById !== currentUser.id
+      ) {
+        return false
+      }
+
+      if (resetPeriod === 'never') {
+        return true
+      }
+
+      const savedPeriodKey =
+        varCase.periodKey ??
+        varCase.quarterKey
+
+      return savedPeriodKey === currentPeriodKey
+    }).length
   }
 
   function canRequestVar(item) {
     if (!item || !currentUser) return false
 
-    const existingVarCase = getVarCaseForEvent(item.id)
+    const existingVarCase =
+      getVarCaseForEvent(item.id)
+
+    const varAllowance =
+      activeTeam?.settings?.varAllowance ?? 1
+
+    const usedVars =
+      getUsedVarCountInCurrentPeriod()
 
     return (
       item.targetId === currentUser.id &&
       item.type !== 'benedizione' &&
       !item.cancelledByVar &&
       !existingVarCase &&
-      !hasUsedVarThisQuarter()
+      usedVars < varAllowance
     )
   }
 
@@ -2491,9 +2573,20 @@ export default function App() {
   }
 
   function canCurrentUserVote(varCase) {
-    if (!currentUser || varCase.status !== 'open') return false
+    if (!currentUser || varCase.status !== 'open') {
+      return false
+    }
 
-    return varCase.eligibleVoterIds?.includes(currentUser.id)
+    if (
+      varCase.expiresAt?.toDate &&
+      varCase.expiresAt.toDate().getTime() <= Date.now()
+    ) {
+      return false
+    }
+
+    return varCase.eligibleVoterIds?.includes(
+      currentUser.id
+    )
   }
 
   function getCurrentUserVote(varCase) {
@@ -3516,28 +3609,46 @@ export default function App() {
                 <div>
                   <h2>Modalità VAR</h2>
                   <p className="panel-subtitle">
-                    Una contestazione disponibile per trimestre
+                    {teamSettings.varAllowance}{' '}
+                    {teamSettings.varAllowance === 1
+                      ? 'contestazione disponibile'
+                      : 'contestazioni disponibili'}
                   </p>
                 </div>
               </div>
 
-              <div
-                className={
-                  hasUsedVarThisQuarter()
-                    ? 'var-availability-card used'
-                    : 'var-availability-card available'
-                }
-              >
-                <strong>
-                  {hasUsedVarThisQuarter()
-                    ? 'VAR trimestrale utilizzato'
-                    : 'VAR trimestrale disponibile'}
-                </strong>
+            <div
+              className={
+                getUsedVarCountInCurrentPeriod() >=
+                teamSettings.varAllowance
+                  ? 'var-availability-card used'
+                  : 'var-availability-card available'
+              }
+            >
+              <strong>
+                VAR disponibili:{' '}
+                {Math.max(
+                  teamSettings.varAllowance -
+                    getUsedVarCountInCurrentPeriod(),
+                  0
+                )}
+                /{teamSettings.varAllowance}
+              </strong>
 
-                <span>
-                  Trimestre corrente: {getQuarterKey()}
-                </span>
-              </div>
+              <span>
+                {teamSettings.varResetPeriod === 'month' &&
+                  'Rinnovo ogni mese'}
+
+                {teamSettings.varResetPeriod === 'quarter' &&
+                  'Rinnovo ogni trimestre'}
+
+                {teamSettings.varResetPeriod === 'year' &&
+                  'Rinnovo ogni anno'}
+
+                {teamSettings.varResetPeriod === 'never' &&
+                  'Nessun rinnovo'}
+              </span>
+            </div>
             </section>
 
             <section className="panel">
@@ -3546,7 +3657,16 @@ export default function App() {
                 <div>
                   <h2>Contestazioni aperte</h2>
                   <p className="panel-subtitle">
-                    Le votazioni durano al massimo 3 giorni
+                    Durata votazioni:{' '}
+                    {teamSettings.varDurationHours < 24
+                      ? `${teamSettings.varDurationHours} ore`
+                      : teamSettings.varDurationHours % 24 === 0
+                        ? `${teamSettings.varDurationHours / 24} ${
+                            teamSettings.varDurationHours === 24
+                              ? 'giorno'
+                              : 'giorni'
+                          }`
+                        : `${teamSettings.varDurationHours} ore`}
                   </p>
                 </div>
               </div>
@@ -4251,9 +4371,22 @@ export default function App() {
 
               <div>
                 <h2>Richiedi il VAR</h2>
-                <p>
-                  Hai una sola contestazione disponibile per trimestre.
-                </p>
+              <p>
+                Hai{' '}
+                {Math.max(
+                  teamSettings.varAllowance -
+                    getUsedVarCountInCurrentPeriod(),
+                  0
+                )}{' '}
+                {Math.max(
+                  teamSettings.varAllowance -
+                    getUsedVarCountInCurrentPeriod(),
+                  0
+                ) === 1
+                  ? 'contestazione disponibile'
+                  : 'contestazioni disponibili'}
+                .
+              </p>
               </div>
             </div>
 
