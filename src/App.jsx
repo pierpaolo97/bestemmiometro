@@ -233,6 +233,11 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const [historyModal, setHistoryModal] = useState(null)
 
+  const [pendingInviteCode, setPendingInviteCode] = useState(() => {
+    const params = new URLSearchParams(window.location.search)
+
+    return params.get('join')?.trim().toUpperCase() || ''
+  })
   const [showJoinTeam, setShowJoinTeam] = useState(false)
   const [joinTeamCode, setJoinTeamCode] = useState('')
   const [joinTeamPreview, setJoinTeamPreview] = useState(null)
@@ -472,8 +477,19 @@ export default function App() {
 
     const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
       const data = snapshot.docs
-        .map((document) => ({ id: document.id, ...document.data() }))
-        .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
+        .map((document) => ({
+          id: document.id,
+          ...document.data(),
+        }))
+        .filter(
+          (user) =>
+            user.accountStatus !== 'removed'
+        )
+        .sort(
+          (a, b) =>
+            (a.createdAt?.seconds || 0) -
+            (b.createdAt?.seconds || 0)
+        )
 
       setUsers(data)
     })
@@ -624,6 +640,23 @@ export default function App() {
 
     setShowNotificationModal(false)
   }, [currentUser])
+
+  useEffect(() => {
+    if (
+      !firebaseUser ||
+      !pendingInviteCode
+    ) {
+      return
+    }
+
+    loadTeamByInviteCode(
+      pendingInviteCode
+    )
+  }, [
+    firebaseUser,
+    pendingInviteCode,
+    userMemberships.length,
+  ])
 
   useEffect(() => {
     let unsubscribeProfile = null
@@ -851,6 +884,13 @@ export default function App() {
     return unsubscribe
   }, [currentUser, isMaintainer])
 
+  const activeMembers = useMemo(() => {
+    return users.filter(
+      (user) =>
+        user.accountStatus !== 'removed'
+    )
+  }, [users])
+
   const ranking = useMemo(() => {
     return users
       .map((user) => ({
@@ -882,6 +922,144 @@ export default function App() {
   }, [varCases])
 
   const teamSettings = getTeamSettings()
+
+  async function changeMemberRole(
+    member,
+    newRole
+  ) {
+    if (!isOwner) {
+      showToast(
+        'Solo l’owner può modificare i ruoli.',
+        'danger'
+      )
+      return
+    }
+
+    if (
+      member.accessRole === 'owner'
+    ) {
+      showToast(
+        'Il ruolo dell’owner non può essere modificato.',
+        'danger'
+      )
+      return
+    }
+
+    if (
+      !['player', 'maintainer'].includes(newRole)
+    ) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      newRole === 'maintainer'
+        ? `Promuovere ${member.username} a maintainer?`
+        : `Rendere ${member.username} un player?`
+    )
+
+    if (!confirmed) return
+
+    try {
+      await updateDoc(
+        doc(db, 'users', member.id),
+        {
+          accessRole: newRole,
+          updatedAt: serverTimestamp(),
+        }
+      )
+
+      showToast(
+        newRole === 'maintainer'
+          ? `${member.username} è ora maintainer.`
+          : `${member.username} è ora player.`,
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore cambio ruolo:',
+        error
+      )
+
+      showToast(
+        'Errore durante la modifica del ruolo.',
+        'danger'
+      )
+    }
+  }
+
+  async function loadTeamByInviteCode(rawCode) {
+    if (!firebaseUser) return
+
+    const code = rawCode
+      .trim()
+      .toUpperCase()
+
+    if (!code) {
+      showToast(
+        'Inserisci un codice invito.',
+        'danger'
+      )
+      return
+    }
+
+    setIsSearchingJoinTeam(true)
+    setJoinTeamPreview(null)
+
+    try {
+      const teamsQuery = query(
+        collection(db, 'teams'),
+        where('inviteCode', '==', code)
+      )
+
+      const snapshot = await getDocs(teamsQuery)
+
+      if (snapshot.empty) {
+        showToast(
+          'Nessun gruppo trovato con questo codice.',
+          'danger'
+        )
+        return
+      }
+
+      const teamDocument = snapshot.docs[0]
+
+      const team = {
+        id: teamDocument.id,
+        ...teamDocument.data(),
+      }
+
+      const alreadyMember =
+        userMemberships.some(
+          (membership) =>
+            membership.teamId === team.id
+        )
+
+      if (alreadyMember) {
+        showToast(
+          'Fai già parte di questo gruppo.',
+          'danger'
+        )
+
+        return
+      }
+
+      setJoinTeamCode(code)
+      setJoinTeamPreview(team)
+      setShowJoinTeam(true)
+    } catch (error) {
+      console.error(
+        'Errore ricerca gruppo:',
+        error
+      )
+
+      showToast(
+        'Errore durante la ricerca del gruppo.',
+        'danger'
+      )
+    } finally {
+      setIsSearchingJoinTeam(false)
+    }
+  }
 
   async function login(event) {
     event.preventDefault()
@@ -964,6 +1142,20 @@ export default function App() {
       setShowJoinTeam(false)
       setJoinTeamPreview(null)
       setJoinTeamCode('')
+
+      setPendingInviteCode('')
+
+      const cleanUrl = new URL(
+        window.location.href
+      )
+
+      cleanUrl.searchParams.delete('join')
+
+      window.history.replaceState(
+        {},
+        '',
+        cleanUrl
+      )
 
       showToast(
         'Richiesta di ingresso inviata.',
@@ -1247,6 +1439,83 @@ export default function App() {
       )
     } finally {
       setReviewingJoinRequestId(null)
+    }
+  }
+
+  async function removeMember(member) {
+    if (!isMaintainer) return
+
+    if (
+      member.id === currentUser.id
+    ) {
+      showToast(
+        'Non puoi rimuovere te stesso.',
+        'danger'
+      )
+      return
+    }
+
+    if (
+      member.accessRole === 'owner'
+    ) {
+      showToast(
+        'L’owner non può essere rimosso.',
+        'danger'
+      )
+      return
+    }
+
+    if (
+      !isOwner &&
+      member.accessRole === 'maintainer'
+    ) {
+      showToast(
+        'Solo l’owner può rimuovere un maintainer.',
+        'danger'
+      )
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Rimuovere ${member.username} dal gruppo? Lo storico resterà conservato.`
+    )
+
+    if (!confirmed) return
+
+    try {
+      await updateDoc(
+        doc(db, 'users', member.id),
+        {
+          accountStatus: 'removed',
+
+          removedAt:
+            serverTimestamp(),
+
+          removedById:
+            currentUser.id,
+
+          removedByName:
+            currentUser.username,
+
+          updatedAt:
+            serverTimestamp(),
+        }
+      )
+
+      showToast(
+        `${member.username} rimosso dal gruppo.`,
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore rimozione membro:',
+        error
+      )
+
+      showToast(
+        'Errore durante la rimozione.',
+        'danger'
+      )
     }
   }
 
@@ -1537,76 +1806,27 @@ export default function App() {
   async function searchTeamByInviteCode(event) {
     event.preventDefault()
 
-    if (!firebaseUser) return
-
-    const code = joinTeamCode
-      .trim()
-      .toUpperCase()
-
-    if (!code) {
-      showToast(
-        'Inserisci un codice invito.',
-        'danger'
-      )
-      return
-    }
-
-    setIsSearchingJoinTeam(true)
-    setJoinTeamPreview(null)
-
-    try {
-      const teamsQuery = query(
-        collection(db, 'teams'),
-        where('inviteCode', '==', code)
-      )
-
-      const snapshot = await getDocs(teamsQuery)
-
-      if (snapshot.empty) {
-        showToast(
-          'Nessun gruppo trovato con questo codice.',
-          'danger'
-        )
-        return
-      }
-
-      const teamDocument = snapshot.docs[0]
-
-      const team = {
-        id: teamDocument.id,
-        ...teamDocument.data(),
-      }
-
-      const alreadyMember =
-        userMemberships.some(
-          (membership) =>
-            membership.teamId === team.id
-        )
-
-      if (alreadyMember) {
-        showToast(
-          'Fai già parte di questo gruppo.',
-          'danger'
-        )
-        return
-      }
-
-      setJoinTeamPreview(team)
-    } catch (error) {
-      console.error(
-        'Errore ricerca gruppo:',
-        error
-      )
-
-      showToast(
-        'Errore durante la ricerca del gruppo.',
-        'danger'
-      )
-    } finally {
-      setIsSearchingJoinTeam(false)
-    }
+    await loadTeamByInviteCode(
+      joinTeamCode
+    )
   }
-  
+
+  function getInviteLink(team = activeTeam) {
+    if (!team?.inviteCode) return ''
+
+    const baseUrl = new URL(
+      import.meta.env.BASE_URL,
+      window.location.origin
+    )
+
+    baseUrl.searchParams.set(
+      'join',
+      team.inviteCode
+    )
+
+    return baseUrl.toString()
+  }
+    
   function generateTeamCode() {
     const alphabet =
       'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -3565,7 +3785,7 @@ export default function App() {
               </form>
             </section>
 
-          {isMaintainer && activeTeam && (
+          {activeTeam && (
             <section className="panel invite-panel">
               <div className="panel-title">
                 <UserPlus />
@@ -3582,12 +3802,9 @@ export default function App() {
               <div className="invite-code-card">
                 <span>Codice invito</span>
 
-                <strong>
-                  {activeTeam.inviteCode}
-                </strong>
-
                 <button
                   type="button"
+                  className="invite-code-value"
                   onClick={async () => {
                     try {
                       await navigator.clipboard.writeText(
@@ -3603,42 +3820,77 @@ export default function App() {
                         'Errore copia codice:',
                         error
                       )
-
-                      showToast(
-                        'Impossibile copiare il codice.',
-                        'danger'
-                      )
                     }
                   }}
+                  title="Copia codice"
                 >
-                  Copia codice
+                  {activeTeam.inviteCode}
                 </button>
-              </div>
+                <p className="invite-help-text">
+                  Tocca il codice per copiarlo oppure condividi direttamente il link.
+                </p>
 
-              {navigator.share && (
-                <button
-                  type="button"
-                  className="share-invite-button"
-                  onClick={async () => {
-                    try {
-                      await navigator.share({
-                        title: activeTeam.name,
-                        text:
-                          `Entra nel gruppo "${activeTeam.name}" con il codice ${activeTeam.inviteCode}`,
-                      })
-                    } catch (error) {
-                      if (error.name !== 'AbortError') {
+                <div className="invite-actions">
+                  <button
+                    type="button"
+                    className="invite-secondary-button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(
+                          getInviteLink()
+                        )
+
+                        showToast(
+                          'Link invito copiato.',
+                          'success'
+                        )
+                      } catch (error) {
                         console.error(
-                          'Errore condivisione:',
+                          'Errore copia link:',
                           error
                         )
+
+                        showToast(
+                          'Impossibile copiare il link.',
+                          'danger'
+                        )
                       }
-                    }
-                  }}
-                >
-                  Condividi invito
-                </button>
-              )}
+                    }}
+                  >
+                    Copia link
+                  </button>
+
+                  {typeof navigator.share === 'function' && (
+                    <button
+                      type="button"
+                      className="invite-primary-button"
+                      onClick={async () => {
+                        try {
+                          const inviteLink = getInviteLink()
+
+                          await navigator.share({
+                            title: `Bestemmiometro · ${activeTeam.name}`,
+                            text:
+                              `🔥 Entra a far parte del gruppo "${activeTeam.name}" su Bestemmiometro!\n` +
+                              `Preparati a bestemmiare, ricevere benedizioni e giocarti il VAR.\n` +
+                              `👉 ${inviteLink}`,
+                          })
+                        } catch (error) {
+                          if (error.name !== 'AbortError') {
+                            console.error(
+                              'Errore condivisione:',
+                              error
+                            )
+                          }
+                        }
+                      }}
+                    >
+                      Condividi invito
+                    </button>
+                  )}
+                </div>
+              </div>
+
             </section>
           )}
           </section>
@@ -4054,6 +4306,115 @@ export default function App() {
                 </span>
               </div>
             </section>
+
+            {activeTeam && (
+              <section className="panel members-panel">
+                <div className="panel-title">
+                  <Users />
+
+                  <div>
+                    <h2>Membri</h2>
+
+                    <p className="panel-subtitle">
+                      {activeMembers.length}{' '}
+                      {activeMembers.length === 1
+                        ? 'partecipante'
+                        : 'partecipanti'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="members-list">
+                  {activeMembers.map((member) => (
+                    <article
+                      className="member-row"
+                      key={member.id}
+                    >
+                      <div className="member-avatar">
+                        {member.username
+                          ?.charAt(0)
+                          ?.toUpperCase() || 'U'}
+                      </div>
+
+                      <div className="member-info">
+                        <strong>
+                          {member.username}
+
+                          {member.id === currentUser.id && (
+                            <span className="member-you">
+                              Tu
+                            </span>
+                          )}
+                        </strong>
+
+                        <span>
+                          {member.email || 'Account storico'}
+                        </span>
+
+                        <small
+                          className={`member-role member-role-${member.accessRole}`}
+                        >
+                          {member.accessRole === 'owner'
+                            ? 'Owner'
+                            : member.accessRole === 'maintainer'
+                              ? 'Maintainer'
+                              : 'Player'}
+                        </small>
+                      </div>
+
+                      {isOwner &&
+                        member.accessRole !== 'owner' &&
+                        member.id !== currentUser.id && (
+                          <div className="member-actions">
+                            <select
+                              value={member.accessRole}
+                              onChange={(event) =>
+                                changeMemberRole(
+                                  member,
+                                  event.target.value
+                                )
+                              }
+                            >
+                              <option value="player">
+                                Player
+                              </option>
+
+                              <option value="maintainer">
+                                Maintainer
+                              </option>
+                            </select>
+
+                            <button
+                              type="button"
+                              className="member-remove-button"
+                              onClick={() =>
+                                removeMember(member)
+                              }
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
+                        )}
+
+                      {!isOwner &&
+                        isMaintainer &&
+                        member.accessRole === 'player' &&
+                        member.id !== currentUser.id && (
+                          <button
+                            type="button"
+                            className="member-remove-button"
+                            onClick={() =>
+                              removeMember(member)
+                            }
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        )}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {isMaintainer && activeTeam && (
               <section className="panel team-settings-panel">
