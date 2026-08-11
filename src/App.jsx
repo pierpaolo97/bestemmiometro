@@ -63,6 +63,16 @@ export default function App() {
     return saved ? JSON.parse(saved) : null
   })
 
+  const [
+    varEnabledSetting,
+    setVarEnabledSetting,
+  ] = useState(true)
+
+  const [
+    isEditingTeamSettings,
+    setIsEditingTeamSettings,
+  ] = useState(false)
+
   const [userMemberships, setUserMemberships] = useState([])
   const [activeMembershipId, setActiveMembershipId] = useState(
     () => localStorage.getItem('bestemmiometro_active_membership')
@@ -439,6 +449,13 @@ export default function App() {
     setVarDurationHoursSetting(
       settings.varDurationHours
     )
+
+    setVarEnabledSetting(
+      settings.varEnabled
+    )
+
+    setIsEditingTeamSettings(false)
+
   }, [activeTeam])
 
   useEffect(() => {
@@ -967,6 +984,40 @@ export default function App() {
     }
   }
 
+  function cancelTeamSettingsEdit() {
+    if (!activeTeam) return
+
+    const settings = getTeamSettings()
+
+    setTeamName(activeTeam.name || '')
+
+    setBestemmiaPointsSetting(
+      settings.bestemmiaPoints
+    )
+
+    setSuperbestemmiaPointsSetting(
+      settings.superbestemmiaPoints
+    )
+
+    setVarEnabledSetting(
+      settings.varEnabled
+    )
+
+    setVarAllowanceSetting(
+      settings.varAllowance
+    )
+
+    setVarResetPeriodSetting(
+      settings.varResetPeriod
+    )
+
+    setVarDurationHoursSetting(
+      settings.varDurationHours
+    )
+
+    setIsEditingTeamSettings(false)
+  }
+
   async function saveTeamSettings(event) {
     event.preventDefault()
 
@@ -1057,6 +1108,9 @@ export default function App() {
           'settings.varDurationHours':
             varDurationHours,
 
+          'settings.varEnabled':
+            varEnabledSetting,
+
           updatedAt: serverTimestamp(),
         }
       )
@@ -1065,6 +1119,7 @@ export default function App() {
         'Impostazioni del gruppo salvate.',
         'success'
       )
+      setIsEditingTeamSettings(false)
     } catch (error) {
       console.error(
         'Errore salvataggio gruppo:',
@@ -1896,33 +1951,6 @@ export default function App() {
 
     // Congela il tipo selezionato per tutta l'operazione.
     const eventType = selectedEventType
-
-    function getTeamSettings() {
-      return {
-        bestemmiaPoints:
-          activeTeam?.settings?.bestemmiaPoints ?? 1,
-
-        superbestemmiaPoints:
-          activeTeam?.settings?.superbestemmiaPoints ?? 2,
-
-        blessingMode:
-          activeTeam?.settings?.blessingMode ??
-          'next-bestemmia-shield',
-
-        varEnabled:
-          activeTeam?.settings?.varEnabled ?? true,
-
-        varAllowance:
-          activeTeam?.settings?.varAllowance ?? 1,
-
-        varResetPeriod:
-          activeTeam?.settings?.varResetPeriod ??
-          'quarter',
-
-        varDurationHours:
-          activeTeam?.settings?.varDurationHours ?? 72,
-      }
-    }
     
     const eventConfig = {
       bestemmia: {
@@ -2088,6 +2116,16 @@ export default function App() {
   
   async function requestVar() {
     if (!currentUser || isSubmittingVar) return
+    const varEnabled =
+      activeTeam?.settings?.varEnabled ?? true
+
+    if (!varEnabled) {
+      showToast(
+        'Il VAR è disabilitato per questo gruppo.',
+        'danger'
+      )
+      return
+    }
 
     const item = varEventToChallenge
     const reason = varReason.trim()
@@ -2543,7 +2581,12 @@ export default function App() {
 
   function canRequestVar(item) {
     if (!item || !currentUser) return false
+    const varEnabled =
+      activeTeam?.settings?.varEnabled ?? true
 
+    if (!varEnabled) {
+      return false
+    }
     const existingVarCase =
       getVarCaseForEvent(item.id)
 
@@ -3617,38 +3660,50 @@ export default function App() {
                 </div>
               </div>
 
-            <div
-              className={
-                getUsedVarCountInCurrentPeriod() >=
-                teamSettings.varAllowance
-                  ? 'var-availability-card used'
-                  : 'var-availability-card available'
-              }
-            >
-              <strong>
-                VAR disponibili:{' '}
-                {Math.max(
-                  teamSettings.varAllowance -
-                    getUsedVarCountInCurrentPeriod(),
-                  0
-                )}
-                /{teamSettings.varAllowance}
-              </strong>
+            {!teamSettings.varEnabled ? (
+              <div className="var-availability-card used">
+                <strong>
+                  VAR disabilitato
+                </strong>
 
-              <span>
-                {teamSettings.varResetPeriod === 'month' &&
-                  'Rinnovo ogni mese'}
+                <span>
+                  Il maintainer ha disabilitato nuove contestazioni.
+                </span>
+              </div>
+            ) : (
+              <div
+                className={
+                  getUsedVarCountInCurrentPeriod() >=
+                  teamSettings.varAllowance
+                    ? 'var-availability-card used'
+                    : 'var-availability-card available'
+                }
+              >
+                <strong>
+                  VAR disponibili:{' '}
+                  {Math.max(
+                    teamSettings.varAllowance -
+                      getUsedVarCountInCurrentPeriod(),
+                    0
+                  )}
+                  /{teamSettings.varAllowance}
+                </strong>
 
-                {teamSettings.varResetPeriod === 'quarter' &&
-                  'Rinnovo ogni trimestre'}
+                <span>
+                  {teamSettings.varResetPeriod === 'month' &&
+                    'Rinnovo ogni mese'}
 
-                {teamSettings.varResetPeriod === 'year' &&
-                  'Rinnovo ogni anno'}
+                  {teamSettings.varResetPeriod === 'quarter' &&
+                    'Rinnovo ogni trimestre'}
 
-                {teamSettings.varResetPeriod === 'never' &&
-                  'Nessun rinnovo'}
-              </span>
-            </div>
+                  {teamSettings.varResetPeriod === 'year' &&
+                    'Rinnovo ogni anno'}
+
+                  {teamSettings.varResetPeriod === 'never' &&
+                    'Nessun rinnovo'}
+                </span>
+              </div>
+            )}
             </section>
 
             <section className="panel">
@@ -4024,11 +4079,23 @@ export default function App() {
                     <input
                       type="text"
                       value={teamName}
+                      disabled={!isEditingTeamSettings}
                       onChange={(event) =>
                         setTeamName(event.target.value)
                       }
                     />
                   </label>
+                  {!isEditingTeamSettings && (
+                    <button
+                      type="button"
+                      className="team-settings-edit-button"
+                      onClick={() =>
+                        setIsEditingTeamSettings(true)
+                      }
+                    >
+                      Modifica impostazioni
+                    </button>
+                  )}
 
                   <div className="team-settings-grid">
                     <label>
@@ -4039,6 +4106,7 @@ export default function App() {
                         min="0"
                         step="1"
                         value={bestemmiaPointsSetting}
+                        disabled={!isEditingTeamSettings}
                         onChange={(event) =>
                           setBestemmiaPointsSetting(
                             event.target.value
@@ -4055,12 +4123,35 @@ export default function App() {
                         min="0"
                         step="1"
                         value={superbestemmiaPointsSetting}
+                        disabled={!isEditingTeamSettings}
                         onChange={(event) =>
                           setSuperbestemmiaPointsSetting(
                             event.target.value
                           )
                         }
                       />
+                    </label>
+
+                    <label>
+                      <span>Modalità VAR</span>
+
+                      <select
+                        value={varEnabledSetting ? 'enabled' : 'disabled'}
+                        disabled={!isEditingTeamSettings}
+                        onChange={(event) =>
+                          setVarEnabledSetting(
+                            event.target.value === 'enabled'
+                          )
+                        }
+                      >
+                        <option value="enabled">
+                          Attiva
+                        </option>
+
+                        <option value="disabled">
+                          Disattivata
+                        </option>
+                      </select>
                     </label>
 
                     <label>
@@ -4071,6 +4162,7 @@ export default function App() {
                         min="0"
                         step="1"
                         value={varAllowanceSetting}
+                        disabled={!isEditingTeamSettings}
                         onChange={(event) =>
                           setVarAllowanceSetting(
                             event.target.value
@@ -4084,6 +4176,7 @@ export default function App() {
 
                       <select
                         value={varResetPeriodSetting}
+                        disabled={!isEditingTeamSettings}
                         onChange={(event) =>
                           setVarResetPeriodSetting(
                             event.target.value
@@ -4113,6 +4206,7 @@ export default function App() {
 
                       <select
                         value={varDurationHoursSetting}
+                        disabled={!isEditingTeamSettings}
                         onChange={(event) =>
                           setVarDurationHoursSetting(
                             event.target.value
@@ -4127,14 +4221,28 @@ export default function App() {
                     </label>
                   </div>
 
-                  <button
-                    type="submit"
-                    disabled={isSavingTeamSettings}
-                  >
-                    {isSavingTeamSettings
-                      ? 'Salvataggio...'
-                      : 'Salva impostazioni'}
-                  </button>
+                {isEditingTeamSettings && (
+                  <div className="team-settings-edit-actions">
+                    <button
+                      type="button"
+                      className="team-settings-cancel-button"
+                      disabled={isSavingTeamSettings}
+                      onClick={cancelTeamSettingsEdit}
+                    >
+                      Annulla
+                    </button>
+
+                    <button
+                      type="submit"
+                      className="team-settings-confirm-button"
+                      disabled={isSavingTeamSettings}
+                    >
+                      {isSavingTeamSettings
+                        ? 'Salvataggio...'
+                        : 'Conferma modifiche'}
+                    </button>
+                  </div>
+                )}
                 </form>
               </section>
             )}
