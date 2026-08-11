@@ -69,6 +69,11 @@ export default function App() {
   ] = useState(true)
 
   const [
+    membershipsLoaded,
+    setMembershipsLoaded,
+  ] = useState(false)
+
+  const [
     isEditingTeamSettings,
     setIsEditingTeamSettings,
   ] = useState(false)
@@ -644,6 +649,7 @@ export default function App() {
   useEffect(() => {
     if (
       !firebaseUser ||
+      !membershipsLoaded ||
       !pendingInviteCode
     ) {
       return
@@ -654,8 +660,9 @@ export default function App() {
     )
   }, [
     firebaseUser,
+    membershipsLoaded,
     pendingInviteCode,
-    userMemberships.length,
+    userMemberships,
   ])
 
   useEffect(() => {
@@ -706,6 +713,7 @@ export default function App() {
         }))
 
         setUserMemberships(memberships)
+        setMembershipsLoaded(true)
 
         if (memberships.length === 0) {
           localStorage.removeItem(SESSION_KEY)
@@ -1028,16 +1036,30 @@ export default function App() {
         ...teamDocument.data(),
       }
 
-      const alreadyMember =
-        userMemberships.some(
-          (membership) =>
-            membership.teamId === team.id
-        )
+      const alreadyMember = userMemberships.some(
+        (membership) =>
+          membership.teamId === team.id &&
+          membership.accountStatus !== 'removed'
+      )
 
       if (alreadyMember) {
-        showToast(
-          'Fai già parte di questo gruppo.',
-          'danger'
+        // Non mostrare il popup
+        setShowJoinTeam(false)
+        setJoinTeamPreview(null)
+        setJoinTeamCode('')
+        setPendingInviteCode('')
+
+        // Rimuovi ?join=... dall'URL
+        const cleanUrl = new URL(
+          window.location.href
+        )
+
+        cleanUrl.searchParams.delete('join')
+
+        window.history.replaceState(
+          {},
+          '',
+          cleanUrl
         )
 
         return
@@ -2090,7 +2112,7 @@ export default function App() {
     }
 
     localStorage.removeItem(SESSION_KEY)
-
+    setMembershipsLoaded(false)
     setCurrentUser(null)
     setFirebaseUser(null)
     setUsers([])
@@ -3111,7 +3133,9 @@ export default function App() {
                 {firebaseUser.displayName}
               </strong>
 
-              <span>{firebaseUser.email}</span>
+              <span>
+                {firebaseUser.email}
+              </span>
             </div>
 
             <button
@@ -3162,11 +3186,77 @@ export default function App() {
           <button
             type="button"
             className="primary-option-button"
-            onClick={() => setShowCreateTeam(true)}
+            onClick={() =>
+              setShowCreateTeam(true)
+            }
           >
             + Crea un nuovo gruppo
           </button>
         </section>
+
+        {/* INVITO APERTO DAL LINK */}
+        {showJoinTeam && (
+          <div
+            className="modal-backdrop"
+            onClick={() =>
+              setShowJoinTeam(false)
+            }
+          >
+            <div
+              className="modal join-team-modal"
+              onClick={(event) =>
+                event.stopPropagation()
+              }
+            >
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setShowJoinTeam(false)
+                }
+              >
+                <X />
+              </button>
+
+              <h2>Entra in un gruppo</h2>
+
+              <p>
+                Sei stato invitato a entrare in questo gruppo.
+              </p>
+
+              {joinTeamPreview ? (
+                <div className="join-team-preview">
+                  <span>
+                    Gruppo trovato
+                  </span>
+
+                  <strong>
+                    {joinTeamPreview.name}
+                  </strong>
+
+                  <small>
+                    Codice:{' '}
+                    {joinTeamPreview.inviteCode}
+                  </small>
+
+                  <button
+                    type="button"
+                    onClick={requestJoinTeam}
+                    disabled={isRequestingJoin}
+                  >
+                    {isRequestingJoin
+                      ? 'Invio richiesta...'
+                      : 'Richiedi accesso'}
+                  </button>
+                </div>
+              ) : (
+                <p>
+                  Caricamento gruppo...
+                </p>
+              )}
+            </div>
+          </div>
+        )}
       </main>
     )
   }
@@ -4302,7 +4392,7 @@ export default function App() {
                 </p>
 
                 <span className="team-key-label">
-                  Team: {currentUser.teamKey}
+                  Team: {currentUser.teamName}
                 </span>
               </div>
             </section>
