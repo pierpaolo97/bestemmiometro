@@ -23,6 +23,7 @@ import {
 import {
   httpsCallable,
 } from 'firebase/functions'
+
 import {
   GoogleAuthProvider,
   getRedirectResult,
@@ -91,6 +92,21 @@ export default function App() {
 
   const [showLegacyRecovery, setShowLegacyRecovery] =
     useState(false)
+
+  const [
+    showDeleteTeamModal,
+    setShowDeleteTeamModal,
+  ] = useState(false)
+
+  const [
+    deleteTeamConfirmation,
+    setDeleteTeamConfirmation,
+  ] = useState('')
+
+  const [
+    isDeletingTeam,
+    setIsDeletingTeam,
+  ] = useState(false)
 
   const [firebaseUser, setFirebaseUser] = useState(null)
   const [authReady, setAuthReady] = useState(false)
@@ -174,6 +190,15 @@ export default function App() {
       httpsCallable(
         functions,
         'rejectJoinRequest'
+      ),
+    []
+  )
+
+  const deleteTeamCallable = useMemo(
+    () =>
+      httpsCallable(
+        functions,
+        'deleteTeam'
       ),
     []
   )
@@ -924,6 +949,96 @@ export default function App() {
   const openVarCases = useMemo(() => {
     return varCases.filter((varCase) => varCase.status === 'open')
   }, [varCases])
+
+  async function deleteCurrentTeam() {
+    if (
+      !isOwner ||
+      !activeTeam ||
+      isDeletingTeam
+    ) {
+      return
+    }
+
+    if (
+      deleteTeamConfirmation.trim() !== 'ELIMINA'
+    ) {
+      showToast(
+        'Scrivi ELIMINA per confermare.',
+        'danger'
+      )
+
+      return
+    }
+
+    setIsDeletingTeam(true)
+
+    try {
+      await deleteTeamCallable({
+        teamId: activeTeam.id,
+        confirmation: 'ELIMINA',
+      })
+
+      /*
+      * Rimuoviamo subito la membership
+      * selezionata dal client.
+      */
+      localStorage.removeItem(
+        'bestemmiometro_active_membership'
+      )
+
+      localStorage.removeItem(
+        SESSION_KEY
+      )
+
+      setShowDeleteTeamModal(false)
+      setDeleteTeamConfirmation('')
+
+      setCurrentUser(null)
+      setActiveTeam(null)
+
+      setUsers([])
+      setEvents([])
+      setVarCases([])
+
+      setActiveMembershipId(null)
+
+      showToast(
+        'Gruppo eliminato definitivamente.',
+        'success'
+      )
+
+      /*
+      * Il listener authUid aggiornerà
+      * userMemberships con gli eventuali
+      * altri gruppi rimasti.
+      */
+      setShowTeamChooser(true)
+    } catch (error) {
+      console.error(
+        'Errore eliminazione gruppo:',
+        error
+      )
+
+      const messages = {
+        'functions/permission-denied':
+          'Solo l’owner può eliminare il gruppo.',
+
+        'functions/not-found':
+          'Il gruppo non esiste più.',
+
+        'functions/unauthenticated':
+          'Devi effettuare nuovamente l’accesso.',
+      }
+
+      showToast(
+        messages[error.code] ||
+          'Errore durante l’eliminazione del gruppo.',
+        'danger'
+      )
+    } finally {
+      setIsDeletingTeam(false)
+    }
+  }
 
   const closedVarCases = useMemo(() => {
     return varCases.filter((varCase) => varCase.status !== 'open')
@@ -3190,7 +3305,7 @@ export default function App() {
               setShowCreateTeam(true)
             }
           >
-            + Crea un nuovo gruppo
+            Crea un nuovo gruppo
           </button>
         </section>
 
@@ -4751,7 +4866,7 @@ export default function App() {
                   </small>
                 </span>
               </button>
-              
+
               <button
                 type="button"
                 className="profile-action-button"
@@ -4793,6 +4908,49 @@ export default function App() {
                   <small>Termina la sessione corrente</small>
                 </span>
               </button>
+
+              {isOwner && activeTeam && (
+                <section className="panel danger-zone-panel">
+                  <div className="panel-title danger-zone-title">
+                    <Trash2 />
+
+                    <div>
+                      <h2>Attenzione </h2>
+
+                      <p className="panel-subtitle">
+                        Operazioni irreversibili sul gruppo
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="danger-zone-content">
+                    <div>
+                      <strong>
+                        Elimina gruppo
+                      </strong>
+
+                      <p>
+                        Elimina definitivamente il gruppo,
+                        tutti i membri, gli eventi, i VAR
+                        e tutto lo storico associato.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="delete-team-button"
+                      onClick={() => {
+                        setDeleteTeamConfirmation('')
+                        setShowDeleteTeamModal(true)
+                      }}
+                    >
+                      <Trash2 size={18} />
+                      Elimina gruppo
+                    </button>
+                  </div>
+                </section>
+              )}
+
             </section>
           </section>
         )}
@@ -5001,6 +5159,104 @@ export default function App() {
                 {isSubmittingVar
                   ? 'Invio in corso...'
                   : 'Invia contestazione'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteTeamModal && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!isDeletingTeam) {
+              setShowDeleteTeamModal(false)
+            }
+          }}
+        >
+          <div
+            className="modal delete-team-modal"
+            onClick={(event) =>
+              event.stopPropagation()
+            }
+          >
+            <button
+              type="button"
+              className="modal-close"
+              disabled={isDeletingTeam}
+              onClick={() =>
+                setShowDeleteTeamModal(false)
+              }
+            >
+              <X />
+            </button>
+
+            <div className="delete-team-warning-icon">
+              <Trash2 size={28} />
+            </div>
+
+            <h2>
+              Eliminare {activeTeam?.name}?
+            </h2>
+
+            <p>
+              Questa operazione è definitiva.
+            </p>
+
+            <div className="delete-team-warning">
+              Verranno eliminati:
+              <ul>
+                <li>tutti i membri del gruppo;</li>
+                <li>tutte le bestemmie e benedizioni;</li>
+                <li>tutti i VAR;</li>
+                <li>tutta la classifica;</li>
+                <li>tutto lo storico.</li>
+              </ul>
+            </div>
+
+            <label className="delete-team-confirmation">
+              <span>
+                Scrivi <strong>ELIMINA</strong> per confermare
+              </span>
+
+              <input
+                type="text"
+                autoComplete="off"
+                value={deleteTeamConfirmation}
+                disabled={isDeletingTeam}
+                onChange={(event) =>
+                  setDeleteTeamConfirmation(
+                    event.target.value.toUpperCase()
+                  )
+                }
+                placeholder="ELIMINA"
+              />
+            </label>
+
+            <div className="delete-team-actions">
+              <button
+                type="button"
+                className="delete-team-cancel-button"
+                disabled={isDeletingTeam}
+                onClick={() =>
+                  setShowDeleteTeamModal(false)
+                }
+              >
+                Annulla
+              </button>
+
+              <button
+                type="button"
+                className="delete-team-confirm-button"
+                disabled={
+                  isDeletingTeam ||
+                  deleteTeamConfirmation !== 'ELIMINA'
+                }
+                onClick={deleteCurrentTeam}
+              >
+                {isDeletingTeam
+                  ? 'Eliminazione...'
+                  : 'Elimina definitivamente'}
               </button>
             </div>
           </div>

@@ -4099,3 +4099,159 @@ textarea {
     order: 2;
   }
 }
+
+.danger-zone-panel {
+  border-color: #fecaca;
+  background: #fffafa;
+}
+
+.danger-zone-title {
+  color: #b91c1c;
+}
+
+.danger-zone-title h2 {
+  color: #991b1b;
+}
+
+.danger-zone-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.danger-zone-content p {
+  margin: 5px 0 0;
+
+  color: #78716c;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.delete-team-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+
+  min-height: 46px;
+  padding: 0 16px;
+
+  flex-shrink: 0;
+
+  border: 0;
+  border-radius: 14px;
+
+  background: #dc2626;
+  color: #ffffff;
+
+  font: inherit;
+  font-weight: 800;
+
+  cursor: pointer;
+}
+
+.delete-team-warning-icon {
+  display: grid;
+  place-items: center;
+
+  width: 54px;
+  height: 54px;
+
+  margin-bottom: 14px;
+
+  border-radius: 50%;
+
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.delete-team-warning {
+  margin: 18px 0;
+  padding: 14px 16px;
+
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+
+  background: #fff1f2;
+  color: #7f1d1d;
+}
+
+.delete-team-warning ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.delete-team-confirmation {
+  display: grid;
+  gap: 8px;
+}
+
+.delete-team-confirmation > span {
+  font-size: 13px;
+}
+
+.delete-team-confirmation input {
+  min-height: 48px;
+  padding: 0 14px;
+
+  border: 1px solid #fca5a5;
+  border-radius: 13px;
+
+  font: inherit;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+
+.delete-team-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+
+  margin-top: 18px;
+}
+
+.delete-team-actions button {
+  min-height: 48px;
+
+  border-radius: 14px;
+
+  font: inherit;
+  font-weight: 800;
+
+  cursor: pointer;
+}
+
+.delete-team-cancel-button {
+  border: 1px solid #d6d3d1;
+
+  background: #ffffff;
+  color: #57534e;
+}
+
+.delete-team-confirm-button {
+  border: 0;
+
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.delete-team-confirm-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 520px) {
+  .danger-zone-content {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .delete-team-button {
+    width: 100%;
+  }
+
+  .delete-team-actions {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1319,3 +1319,166 @@ async function getAuthenticatedTeamProfileByKey(
     ...profileDocument.data(),
   }
 }
+
+exports.deleteTeam = onCall(
+  {
+    region: 'europe-west8',
+    timeoutSeconds: 300,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const confirmation =
+      typeof request.data?.confirmation === 'string'
+        ? request.data.confirmation.trim()
+        : ''
+
+    if (!teamId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'teamId mancante.'
+      )
+    }
+
+    if (confirmation !== 'ELIMINA') {
+      throw new HttpsError(
+        'invalid-argument',
+        'Conferma eliminazione non valida.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const teamRef = db
+      .collection('teams')
+      .doc(teamId)
+
+    const teamSnapshot =
+      await teamRef.get()
+
+    if (!teamSnapshot.exists) {
+      throw new HttpsError(
+        'not-found',
+        'Il gruppo non esiste.'
+      )
+    }
+
+    const team = teamSnapshot.data()
+
+    /*
+     * Cerchiamo la membership dell'utente
+     * proprio in questo gruppo.
+     */
+    const ownerQuery = await db
+      .collection('users')
+      .where('authUid', '==', request.auth.uid)
+      .where('teamId', '==', teamId)
+      .where('accountStatus', '==', 'active')
+      .limit(1)
+      .get()
+
+    if (ownerQuery.empty) {
+      throw new HttpsError(
+        'permission-denied',
+        'Non fai parte di questo gruppo.'
+      )
+    }
+
+    const ownerProfile =
+      ownerQuery.docs[0].data()
+
+    if (ownerProfile.accessRole !== 'owner') {
+      throw new HttpsError(
+        'permission-denied',
+        'Solo l’owner può eliminare il gruppo.'
+      )
+    }
+
+    /*
+     * Ulteriore controllo:
+     * se ownerUid è presente nel documento team,
+     * deve coincidere con chi sta eseguendo
+     * l'operazione.
+     */
+    if (
+      team.ownerUid &&
+      team.ownerUid !== request.auth.uid
+    ) {
+      throw new HttpsError(
+        'permission-denied',
+        'Non sei il proprietario del gruppo.'
+      )
+    }
+
+    const collections = [
+      'events',
+      'varCases',
+      'varUsage',
+      'joinRequests',
+      'users',
+    ]
+
+    let deletedDocuments = 0
+
+    /*
+     * BulkWriter è adatto a molte operazioni
+     * server-side Firestore.
+     */
+    const writer = db.bulkWriter()
+
+    writer.onWriteError((error) => {
+      console.error(
+        'Errore BulkWriter:',
+        error
+      )
+
+      /*
+       * Firebase ritenta già alcune operazioni;
+       * limitiamo eventuali ulteriori retry.
+       */
+      return error.failedAttempts < 3
+    })
+
+    for (const collectionName of collections) {
+      const snapshot = await db
+        .collection(collectionName)
+        .where('teamId', '==', teamId)
+        .get()
+
+      for (const document of snapshot.docs) {
+        writer.delete(document.ref)
+        deletedDocuments += 1
+      }
+    }
+
+    await writer.close()
+
+    /*
+     * Il team viene eliminato per ultimo:
+     * finché la pulizia non è terminata,
+     * il documento principale continua
+     * ad esistere.
+     */
+    await teamRef.delete()
+
+    console.log(
+      `Team ${teamId} eliminato da ${request.auth.uid}. ` +
+      `${deletedDocuments} documenti associati rimossi.`
+    )
+
+    return {
+      success: true,
+      deletedDocuments,
+    }
+  }
+)
