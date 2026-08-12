@@ -1054,7 +1054,7 @@ exports.approveJoinRequest = onCall(
           )
         }
 
-        // 3. Verifichiamo che non sia già membro
+        // 3. Cerchiamo un'eventuale vecchia membership
         const existingMembershipQuery = db
           .collection('users')
           .where(
@@ -1067,25 +1067,64 @@ exports.approveJoinRequest = onCall(
             '==',
             joinRequest.teamId
           )
-          .limit(1)
 
         const existingMembershipSnapshot =
           await transaction.get(
             existingMembershipQuery
           )
 
-        if (!existingMembershipSnapshot.empty) {
-          throw new HttpsError(
-            'already-exists',
-            'L’utente fa già parte del gruppo.'
-          )
-        }
-
-        const membershipRef =
-          db.collection('users').doc()
-
         const now =
           FieldValue.serverTimestamp()
+
+        let membershipRef = null
+        let reactivatedMembership = false
+
+        if (!existingMembershipSnapshot.empty) {
+          const memberships =
+            existingMembershipSnapshot.docs.map(
+              (document) => ({
+                id: document.id,
+                ref: document.ref,
+                ...document.data(),
+              })
+            )
+
+          const activeMembership =
+            memberships.find(
+              (membership) =>
+                membership.accountStatus === 'active'
+            )
+
+          if (activeMembership) {
+            throw new HttpsError(
+              'already-exists',
+              'L’utente fa già parte del gruppo.'
+            )
+          }
+
+          /*
+          * Non esiste nessuna membership attiva:
+          * recuperiamo una di quelle rimosse.
+          */
+          const removedMembership =
+            memberships.find(
+              (membership) =>
+                membership.accountStatus === 'removed'
+            )
+
+          if (removedMembership) {
+            membershipRef =
+              removedMembership.ref
+
+            reactivatedMembership = true
+          }
+        } 
+
+        if (!membershipRef) {
+          membershipRef =
+            db.collection('users').doc()
+        }
+
 
         const displayName =
           joinRequest.requestedByName ||
@@ -1101,48 +1140,97 @@ exports.approveJoinRequest = onCall(
         const lastName =
           nameParts.slice(1).join(' ')
 
-        transaction.set(
-          membershipRef,
-          {
-            authUid:
-              joinRequest.requestedByUid,
+        if (reactivatedMembership) {
+          transaction.update(
+            membershipRef,
+            {
+              accountStatus: 'active',
 
-            teamId:
-              joinRequest.teamId,
+              /*
+              * Rientra sempre come Player.
+              * Non recuperiamo automaticamente
+              * eventuali privilegi da Maintainer.
+              */
+              accessRole: 'player',
 
-            teamKey:
-              joinRequest.teamKey,
+              email:
+                joinRequest.requestedByEmail ||
+                null,
 
-            teamName:
-              joinRequest.teamName,
+              photoURL:
+                joinRequest.requestedByPhotoURL ||
+                null,
 
-            username: firstName,
+              removedAt: null,
+              removedById: null,
+              removedByName: null,
 
-            firstName,
-            lastName,
+              leftAt: null,
 
-            email:
-              joinRequest.requestedByEmail ||
-              null,
+              rejoinedAt: now,
 
-            photoURL:
-              joinRequest.requestedByPhotoURL ||
-              null,
+              updatedAt: now,
+            }
+          )
+        } else {
+          const displayName =
+            joinRequest.requestedByName ||
+            joinRequest.requestedByEmail ||
+            'Giocatore'
 
-            role: 'default',
-            accessRole: 'player',
-            accountStatus: 'active',
+          const nameParts =
+            displayName.trim().split(/\s+/)
 
-            createdAt: now,
-            updatedAt: now,
-          }
-        )
+          const firstName =
+            nameParts[0] || displayName
+
+          const lastName =
+            nameParts.slice(1).join(' ')
+
+          transaction.set(
+            membershipRef,
+            {
+              authUid:
+                joinRequest.requestedByUid,
+
+              teamId:
+                joinRequest.teamId,
+
+              teamKey:
+                joinRequest.teamKey,
+
+              teamName:
+                joinRequest.teamName,
+
+              username:
+                firstName,
+
+              firstName,
+              lastName,
+
+              email:
+                joinRequest.requestedByEmail ||
+                null,
+
+              photoURL:
+                joinRequest.requestedByPhotoURL ||
+                null,
+
+              role: 'default',
+              accessRole: 'player',
+              accountStatus: 'active',
+
+              createdAt: now,
+              updatedAt: now,
+            }
+          )
+        }
 
         transaction.update(
           joinRequestRef,
           {
             status: 'approved',
-
+            reactivatedMembership,
             membershipId:
               membershipRef.id,
 
@@ -1163,6 +1251,7 @@ exports.approveJoinRequest = onCall(
         return {
           membershipId:
             membershipRef.id,
+          reactivatedMembership,
         }
       }
     )
@@ -1479,6 +1568,247 @@ exports.deleteTeam = onCall(
     return {
       success: true,
       deletedDocuments,
+    }
+  }
+)
+
+exports.leaveTeam = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    if (!teamId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'teamId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    await db.runTransaction(
+      async (transaction) => {
+        const membership =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        if (
+          membership.accessRole === 'owner'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'L’owner deve trasferire la proprietà prima di uscire.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          membership.ref,
+          {
+            accountStatus: 'removed',
+
+            leftAt: now,
+
+            removedAt: now,
+
+            removedById:
+              membership.id,
+
+            removedByName:
+              membership.username || null,
+
+            updatedAt: now,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+exports.transferTeamOwnership = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const targetMembershipId =
+      typeof request.data?.targetMembershipId === 'string'
+        ? request.data.targetMembershipId.trim()
+        : ''
+
+    if (
+      !teamId ||
+      !targetMembershipId
+    ) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Dati mancanti.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const teamRef = db
+      .collection('teams')
+      .doc(teamId)
+
+    const targetRef = db
+      .collection('users')
+      .doc(targetMembershipId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        /*
+         * Tutte le letture prima delle scritture.
+         */
+
+        const currentOwner =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        if (
+          currentOwner.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo l’owner può trasferire la proprietà.'
+          )
+        }
+
+        if (
+          currentOwner.id ===
+          targetMembershipId
+        ) {
+          throw new HttpsError(
+            'invalid-argument',
+            'Sei già owner del gruppo.'
+          )
+        }
+
+        const teamSnapshot =
+          await transaction.get(teamRef)
+
+        if (!teamSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Il gruppo non esiste.'
+          )
+        }
+
+        const targetSnapshot =
+          await transaction.get(targetRef)
+
+        if (!targetSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Il membro selezionato non esiste.'
+          )
+        }
+
+        const target =
+          targetSnapshot.data()
+
+        if (
+          target.teamId !== teamId
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Il membro appartiene a un altro gruppo.'
+          )
+        }
+
+        if (
+          target.accountStatus !== 'active'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il membro non è attivo.'
+          )
+        }
+
+        if (!target.authUid) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il membro deve avere un account Google collegato.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        /*
+         * Il vecchio owner diventa maintainer.
+         */
+        transaction.update(
+          currentOwner.ref,
+          {
+            accessRole: 'maintainer',
+            updatedAt: now,
+          }
+        )
+
+        /*
+         * Il nuovo membro diventa owner.
+         */
+        transaction.update(
+          targetRef,
+          {
+            accessRole: 'owner',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          teamRef,
+          {
+            ownerUid:
+              target.authUid,
+
+            updatedAt: now,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
     }
   }
 )

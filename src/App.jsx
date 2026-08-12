@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   collection,
   addDoc,
+  getDoc,
   deleteDoc,
   doc,
   getDocs,
@@ -203,6 +204,25 @@ export default function App() {
     []
   )
 
+  const leaveTeamCallable = useMemo(
+    () =>
+      httpsCallable(
+        functions,
+        'leaveTeam'
+      ),
+    []
+  )
+
+  const transferTeamOwnershipCallable =
+    useMemo(
+      () =>
+        httpsCallable(
+          functions,
+          'transferTeamOwnership'
+        ),
+      []
+    )
+
   const [teamName, setTeamName] = useState('')
 
   const [
@@ -235,11 +255,6 @@ export default function App() {
     setIsSavingTeamSettings,
   ] = useState(false)
 
-  const [loginTeamKey, setLoginTeamKey] = useState('')
-  const [loginFirstName, setLoginFirstName] = useState('')
-  const [loginLastName, setLoginLastName] = useState('')
-  const [loginError, setLoginError] = useState('')
-
   const [users, setUsers] = useState([])
   const [events, setEvents] = useState([])
   const [varCases, setVarCases] = useState([])
@@ -249,11 +264,6 @@ export default function App() {
 
   const [activeTeam, setActiveTeam] = useState(null)
   const [teamLoading, setTeamLoading] = useState(false)
-
-  const [newFirstName, setNewFirstName] = useState('')
-  const [newLastName, setNewLastName] = useState('')
-  const [newUsername, setNewUsername] = useState('')
-  const [newAccessRole, setNewAccessRole] = useState('player')
 
   const [selectedTargetId, setSelectedTargetId] = useState('')
   const [selectedEventType, setSelectedEventType] = useState('bestemmia')
@@ -1198,35 +1208,157 @@ export default function App() {
     }
   }
 
-  async function login(event) {
-    event.preventDefault()
-    setLoginError('')
-
-    const teamKey = loginTeamKey.trim()
-    const firstName = loginFirstName.trim().toLowerCase()
-    const lastName = loginLastName.trim().toLowerCase()
-
-    if (!teamKey || !firstName || !lastName) return
-
-    const q = query(collection(db, 'users'), where('teamKey', '==', teamKey))
-    const snapshot = await getDocs(q)
-
-    const matchedUser = snapshot.docs
-      .map((document) => ({ id: document.id, ...document.data() }))
-      .find((user) => {
-        return (
-          user.firstName?.toLowerCase() === firstName &&
-          user.lastName?.toLowerCase() === lastName
-        )
-      })
-
-    if (!matchedUser) {
-      setLoginError('Utente non trovato per questo team.')
+  async function leaveCurrentTeam() {
+    if (
+      !currentUser ||
+      !activeTeam
+    ) {
       return
     }
 
-    localStorage.setItem(SESSION_KEY, JSON.stringify(matchedUser))
-    setCurrentUser(matchedUser)
+    if (isOwner) {
+      showToast(
+        'Devi trasferire la proprietà prima di uscire dal gruppo.',
+        'danger'
+      )
+
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Vuoi uscire da "${activeTeam.name}"? Lo storico della partita resterà conservato.`
+    )
+
+    if (!confirmed) return
+
+    try {
+      const leavingMembershipId =
+        currentUser.id
+
+      await leaveTeamCallable({
+        teamId: activeTeam.id,
+      })
+
+      localStorage.removeItem(
+        SESSION_KEY
+      )
+
+      localStorage.removeItem(
+        'bestemmiometro_active_membership'
+      )
+
+      const remainingMemberships =
+        userMemberships.filter(
+          (membership) =>
+            membership.id !==
+            leavingMembershipId
+        )
+
+      setUserMemberships(
+        remainingMemberships
+      )
+
+      setCurrentUser(null)
+      setActiveTeam(null)
+
+      setUsers([])
+      setEvents([])
+      setVarCases([])
+
+      setActiveMembershipId(null)
+
+      if (
+        remainingMemberships.length === 1
+      ) {
+        selectMembership(
+          remainingMemberships[0]
+        )
+      } else if (
+        remainingMemberships.length > 1
+      ) {
+        setShowTeamChooser(true)
+      }
+
+      showToast(
+        'Hai lasciato il gruppo.',
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore uscita gruppo:',
+        error
+      )
+
+      const messages = {
+        'functions/failed-precondition':
+          'Devi trasferire la proprietà prima di uscire.',
+
+        'functions/permission-denied':
+          'Non fai parte di questo gruppo.',
+
+        'functions/unauthenticated':
+          'Devi effettuare nuovamente l’accesso.',
+      }
+
+      showToast(
+        messages[error.code] ||
+          'Errore durante l’uscita dal gruppo.',
+        'danger'
+      )
+    }
+  }
+
+  async function transferOwnership(member) {
+    if (
+      !isOwner ||
+      !activeTeam ||
+      !member
+    ) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Vuoi trasferire la proprietà di "${activeTeam.name}" a ${member.username}?\n\nTu diventerai Maintainer.`
+    )
+
+    if (!confirmed) return
+
+    try {
+      await transferTeamOwnershipCallable({
+        teamId:
+          activeTeam.id,
+
+        targetMembershipId:
+          member.id,
+      })
+
+      showToast(
+        `${member.username} è ora owner del gruppo.`,
+        'success'
+      )
+    } catch (error) {
+      console.error(
+        'Errore trasferimento proprietà:',
+        error
+      )
+
+      const messages = {
+        'functions/permission-denied':
+          'Solo l’owner può trasferire la proprietà.',
+
+        'functions/failed-precondition':
+          'Il membro selezionato non può diventare owner.',
+
+        'functions/not-found':
+          'Il membro o il gruppo non esiste più.',
+      }
+
+      showToast(
+        messages[error.code] ||
+          'Errore durante il trasferimento della proprietà.',
+        'danger'
+      )
+    }
   }
 
   async function requestJoinTeam() {
@@ -1252,23 +1384,100 @@ export default function App() {
         requestId
       )
 
-      await setDoc(requestRef, {
-        teamId: joinTeamPreview.id,
-        teamName: joinTeamPreview.name,
-        teamKey: joinTeamPreview.inviteCode,
+      const existingSnapshot =
+        await getDoc(requestRef)
 
-        requestedByUid: firebaseUser.uid,
+      if (existingSnapshot.exists()) {
+        const existingRequest =
+          existingSnapshot.data()
+
+        if (existingRequest.status === 'pending') {
+          closeJoinFlow()
+
+          showToast(
+            'Hai già una richiesta di ingresso in attesa.',
+            'success'
+          )
+
+          return
+        }
+
+        /*
+        * rejected oppure approved:
+        * possiamo riaprire la richiesta.
+        *
+        * Il backend controllerà se la vecchia
+        * membership è stata rimossa.
+        */
+        await updateDoc(requestRef, {
+          teamName:
+            joinTeamPreview.name,
+
+          teamKey:
+            joinTeamPreview.inviteCode,
+
+          requestedByEmail:
+            firebaseUser.email || null,
+
+          requestedByName:
+            firebaseUser.displayName || null,
+
+          requestedByPhotoURL:
+            firebaseUser.photoURL || null,
+
+          status: 'pending',
+
+          reviewedAt: null,
+          reviewedByUid: null,
+          reviewedByUserId: null,
+          reviewedByName: null,
+
+          requestedAgainAt:
+            serverTimestamp(),
+
+          updatedAt:
+            serverTimestamp(),
+        })
+
+        closeJoinFlow()
+
+        showToast(
+          'Richiesta di ingresso inviata.',
+          'success'
+        )
+
+        return
+      }
+
+      await setDoc(requestRef, {
+        teamId:
+          joinTeamPreview.id,
+
+        teamName:
+          joinTeamPreview.name,
+
+        teamKey:
+          joinTeamPreview.inviteCode,
+
+        requestedByUid:
+          firebaseUser.uid,
+
         requestedByEmail:
           firebaseUser.email || null,
+
         requestedByName:
           firebaseUser.displayName || null,
+
         requestedByPhotoURL:
           firebaseUser.photoURL || null,
 
         status: 'pending',
 
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt:
+          serverTimestamp(),
+
+        updatedAt:
+          serverTimestamp(),
 
         reviewedAt: null,
         reviewedByUid: null,
@@ -1276,23 +1485,7 @@ export default function App() {
         reviewedByName: null,
       })
 
-      setShowJoinTeam(false)
-      setJoinTeamPreview(null)
-      setJoinTeamCode('')
-
-      setPendingInviteCode('')
-
-      const cleanUrl = new URL(
-        window.location.href
-      )
-
-      cleanUrl.searchParams.delete('join')
-
-      window.history.replaceState(
-        {},
-        '',
-        cleanUrl
-      )
+      closeJoinFlow()
 
       showToast(
         'Richiesta di ingresso inviata.',
@@ -1311,6 +1504,25 @@ export default function App() {
     } finally {
       setIsRequestingJoin(false)
     }
+  }
+
+  function closeJoinFlow() {
+    setShowJoinTeam(false)
+    setJoinTeamPreview(null)
+    setJoinTeamCode('')
+    setPendingInviteCode('')
+
+    const cleanUrl = new URL(
+      window.location.href
+    )
+
+    cleanUrl.searchParams.delete('join')
+
+    window.history.replaceState(
+      {},
+      '',
+      cleanUrl
+    )
   }
 
   function cancelTeamSettingsEdit() {
@@ -2235,38 +2447,6 @@ export default function App() {
     setVarCases([])
     setPendingAccountLinkRequests([])
     setActiveTab('home')
-  }
-
-  async function addUser(event) {
-    event.preventDefault()
-
-    if (!isMaintainer) return
-
-    const firstName = newFirstName.trim()
-    const lastName = newLastName.trim()
-    const username = newUsername.trim() || firstName
-
-    if (!firstName || !lastName || !username) return
-
-    await addDoc(collection(db, 'users'), {
-      teamId:
-        activeTeam?.id ||
-        currentUser.teamId ||
-        null,
-      teamKey: currentUser.teamKey,
-      firstName,
-      lastName,
-      username,
-      role: 'default',
-      accessRole: newAccessRole,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    })
-
-    setNewFirstName('')
-    setNewLastName('')
-    setNewUsername('')
-    setNewAccessRole('player')
   }
 
   function getTeamSettings() {
@@ -3735,55 +3915,6 @@ export default function App() {
 
             <span>Continua con Google</span>
           </button>
-
-          <div className="legacy-login-divider">
-            <span>Accesso temporaneo maintainer</span>
-          </div>
-
-          <form
-            onSubmit={login}
-            className="login-form"
-          >
-            {/* Mantieni qui i tuoi tre input:
-                team key, nome e cognome */}
-
-            <input
-              type="text"
-              placeholder="Team key"
-              value={loginTeamKey}
-              onChange={(event) =>
-                setLoginTeamKey(event.target.value)
-              }
-            />
-
-            <input
-              type="text"
-              placeholder="Nome"
-              value={loginFirstName}
-              onChange={(event) =>
-                setLoginFirstName(event.target.value)
-              }
-            />
-
-            <input
-              type="text"
-              placeholder="Cognome"
-              value={loginLastName}
-              onChange={(event) =>
-                setLoginLastName(event.target.value)
-              }
-            />
-
-            {loginError && (
-              <p className="error-message">
-                {loginError}
-              </p>
-            )}
-
-            <button type="submit">
-              Accesso storico
-            </button>
-          </form>
         </section>
       </main>
     )
@@ -4591,6 +4722,17 @@ export default function App() {
 
                             <button
                               type="button"
+                              className="member-transfer-owner-button"
+                              onClick={() =>
+                                transferOwnership(member)
+                              }
+                              title="Trasferisci proprietà"
+                            >
+                              Rendi owner
+                            </button>
+
+                            <button
+                              type="button"
                               className="member-remove-button"
                               onClick={() =>
                                 removeMember(member)
@@ -4895,6 +5037,26 @@ export default function App() {
                   <small>Consulta punteggi e funzionamento</small>
                 </span>
               </button>
+
+              {!isOwner && activeTeam && (
+                <button
+                  type="button"
+                  className="profile-action-button leave-team-button"
+                  onClick={leaveCurrentTeam}
+                >
+                  <LogOut size={21} />
+
+                  <span>
+                    <strong>
+                      Esci dal gruppo
+                    </strong>
+
+                    <small>
+                      Abbandona {activeTeam.name}
+                    </small>
+                  </span>
+                </button>
+              )}
 
               <button
                 type="button"
