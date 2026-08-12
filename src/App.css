@@ -4276,3 +4276,40 @@ textarea {
 .member-transfer-owner-button:hover {
   background: #fef3c7;
 }
+
+.microsoft-login-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 12px;
+  width: 100%;
+  min-height: 50px;
+  padding: 0 18px;
+
+  border: 1px solid #d6d3d1;
+  border-radius: 14px;
+
+  background: #ffffff;
+  color: #292524;
+
+  font: inherit;
+  font-weight: 700;
+
+  cursor: pointer;
+}
+
+.microsoft-login-button:hover {
+  background: #fafaf9;
+}
+
+.microsoft-logo {
+  position: absolute;
+  left: 18px;
+
+  width: 22px;
+  height: 22px;
+
+  flex: 0 0 auto;
+}

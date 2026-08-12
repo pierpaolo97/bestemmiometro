@@ -27,6 +27,8 @@ import {
 
 import {
   GoogleAuthProvider,
+  OAuthProvider,
+  linkWithCredential,
   getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
@@ -59,11 +61,23 @@ googleProvider.setCustomParameters({
   prompt: 'select_account',
 })
 
+const microsoftProvider =
+  new OAuthProvider('microsoft.com')
+
+microsoftProvider.setCustomParameters({
+  prompt: 'select_account',
+})
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem(SESSION_KEY)
     return saved ? JSON.parse(saved) : null
   })
+
+  const [
+    pendingMicrosoftCredential,
+    setPendingMicrosoftCredential,
+  ] = useState(null)
 
   const [
     varEnabledSetting,
@@ -346,23 +360,29 @@ export default function App() {
   }
 
   useEffect(() => {
-    async function handleGoogleRedirectResult() {
+    async function handleAuthRedirectResult() {
       try {
         await getRedirectResult(auth)
       } catch (error) {
         console.error(
-          'Errore risultato redirect Google:',
+          'Errore risultato redirect autenticazione:',
           error
         )
 
+        const messages = {
+          'auth/account-exists-with-different-credential':
+            'Esiste già un account con questa email collegato a un altro metodo di accesso.',
+        }
+
         showToast(
-          'Accesso Google non riuscito.',
+          messages[error.code] ||
+            'Accesso non riuscito.',
           'danger'
         )
       }
     }
 
-    handleGoogleRedirectResult()
+    handleAuthRedirectResult()
   }, [])
 
   useEffect(() => {
@@ -1960,6 +1980,85 @@ export default function App() {
     }
   }
 
+  async function loginWithMicrosoft() {
+    try {
+      const isMobileDevice =
+        /Android|iPhone|iPad|iPod/i.test(
+          navigator.userAgent
+        )
+
+      if (isMobileDevice) {
+        await signInWithRedirect(
+          auth,
+          microsoftProvider
+        )
+
+        return
+      }
+
+      await signInWithPopup(
+        auth,
+        microsoftProvider
+      )
+    } catch (error) {
+      console.error(
+        'Errore login Microsoft:',
+        error
+      )
+
+      if (
+        error.code ===
+        'auth/account-exists-with-different-credential'
+      ) {
+        const microsoftCredential =
+          error.credential ||
+          OAuthProvider.credentialFromError?.(error)
+
+        if (!microsoftCredential) {
+          console.error(
+            'Credenziale Microsoft non disponibile:',
+            error
+          )
+
+          showToast(
+            'Account già esistente, ma non riesco a recuperare la credenziale Microsoft.',
+            'danger'
+          )
+
+          return
+        }
+
+        setPendingMicrosoftCredential(
+          microsoftCredential
+        )
+
+        showToast(
+          'Questa email è già collegata a Google. Accedi con Google per collegare anche Microsoft.',
+          'danger'
+        )
+
+        return
+      }
+
+      const messages = {
+        'auth/popup-closed-by-user':
+          'Accesso Microsoft annullato.',
+
+        'auth/popup-blocked':
+          'Il browser ha bloccato la finestra di accesso.',
+
+        'auth/cancelled-popup-request':
+          'È già in corso un tentativo di accesso.',
+      }
+
+      showToast(
+        messages[error.code] ||
+          'Accesso Microsoft non riuscito.',
+        'danger'
+      )
+    }
+  }
+
   async function loginWithGoogle() {
     try {
       const isMobileDevice =
@@ -1976,10 +2075,39 @@ export default function App() {
         return
       }
 
-      await signInWithPopup(
-        auth,
-        googleProvider
-      )
+
+      const result =
+        await signInWithPopup(
+          auth,
+          googleProvider
+        )
+
+      if (pendingMicrosoftCredential) {
+        try {
+          await linkWithCredential(
+            result.user,
+            pendingMicrosoftCredential
+          )
+
+          setPendingMicrosoftCredential(null)
+
+          showToast(
+            'Account Microsoft collegato correttamente.',
+            'success'
+          )
+        } catch (linkError) {
+          console.error(
+            'Errore collegamento Microsoft:',
+            linkError
+          )
+
+          showToast(
+            'Accesso Google riuscito, ma non è stato possibile collegare Microsoft.',
+            'danger'
+          )
+        }
+      }
+
     } catch (error) {
       console.error('Errore login Google:', error)
 
@@ -3885,6 +4013,20 @@ export default function App() {
             alt="Bestemmiometro"
           />
 
+          {pendingMicrosoftCredential && (
+            <div className="account-link-notice">
+              <strong>
+                Account già esistente
+              </strong>
+
+              <p>
+                Questa email è già collegata ad un account Google.
+                Accedi con Google una volta per collegare
+                anche Microsoft allo stesso account.
+              </p>
+
+            </div>
+          )}
           <button
             type="button"
             className="google-login-button"
@@ -3914,6 +4056,54 @@ export default function App() {
             </svg>
 
             <span>Continua con Google</span>
+          </button>
+
+          <button
+            type="button"
+            className="microsoft-login-button"
+            onClick={loginWithMicrosoft}
+          >
+            <svg
+              className="microsoft-logo"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <rect
+                x="2"
+                y="2"
+                width="9"
+                height="9"
+                fill="#f25022"
+              />
+
+              <rect
+                x="13"
+                y="2"
+                width="9"
+                height="9"
+                fill="#7fba00"
+              />
+
+              <rect
+                x="2"
+                y="13"
+                width="9"
+                height="9"
+                fill="#00a4ef"
+              />
+
+              <rect
+                x="13"
+                y="13"
+                width="9"
+                height="9"
+                fill="#ffb900"
+              />
+            </svg>
+
+            <span>
+              Continua con Microsoft
+            </span>
           </button>
         </section>
       </main>
