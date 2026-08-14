@@ -57,21 +57,33 @@ exports.notifyNewEvent = onDocumentCreated(
     try {
       const data = event.data.data()
 
-      if (!data?.teamKey) {
-        console.log('Evento senza teamKey')
+      if (!data?.teamId) {
+        console.log(
+          'Evento senza teamId'
+        )
+
         return
       }
-
-      console.log('Nuovo evento ricevuto')
-      console.log('Tipo:', data.type)
-      console.log('Target:', data.targetName)
 
       const db = getFirestore()
 
       const usersSnapshot = await db
         .collection('users')
-        .where('teamKey', '==', data.teamKey)
-        .where('notificationsEnabled', '==', true)
+        .where(
+          'teamId',
+          '==',
+          data.teamId
+        )
+        .where(
+          'accountStatus',
+          '==',
+          'active'
+        )
+        .where(
+          'notificationsEnabled',
+          '==',
+          true
+        )
         .get()
 
       let tokens = usersSnapshot.docs
@@ -161,7 +173,7 @@ exports.notifyNewEvent = onDocumentCreated(
 async function notifyVarResult(varCase, result) {
   const db = getFirestore()
 
-  if (!varCase?.teamKey) {
+  if (!varCase?.teamId) {
     console.log(
       'Impossibile notificare il risultato VAR: teamKey mancante.'
     )
@@ -170,8 +182,21 @@ async function notifyVarResult(varCase, result) {
 
   const usersSnapshot = await db
     .collection('users')
-    .where('teamKey', '==', varCase.teamKey)
-    .where('notificationsEnabled', '==', true)
+    .where(
+      'teamId',
+      '==',
+      varCase.teamId
+    )
+    .where(
+      'accountStatus',
+      '==',
+      'active'
+    )
+    .where(
+      'notificationsEnabled',
+      '==',
+      true
+    )
     .get()
 
   const recipients = usersSnapshot.docs
@@ -218,7 +243,7 @@ async function notifyVarResult(varCase, result) {
         result,
         eventId: varCase.eventId || '',
         varCaseId: varCase.eventId || '',
-        teamKey: varCase.teamKey || '',
+        teamKey: varCase.teamId || '',
         targetName: varCase.targetName || '',
       },
 
@@ -482,6 +507,7 @@ exports.notifyNewVar = onDocumentCreated(
     }
 
     const {
+      teamId,
       teamKey,
       challengedById,
       challengedByName,
@@ -491,8 +517,8 @@ exports.notifyNewVar = onDocumentCreated(
       eventId,
     } = varCase
 
-    if (!teamKey) {
-      console.log('teamKey mancante nel VAR.')
+    if (!teamId) {
+      console.log('teamId mancante nel VAR.')
       return
     }
 
@@ -500,7 +526,7 @@ exports.notifyNewVar = onDocumentCreated(
 
     const usersSnapshot = await db
       .collection('users')
-      .where('teamKey', '==', teamKey)
+      .where('teamId', '==', teamId)
       .where('notificationsEnabled', '==', true)
       .get()
 
@@ -549,12 +575,27 @@ exports.notifyNewVar = onDocumentCreated(
 
       data: {
         type: 'var-opened',
-        varCaseId: event.params.varCaseId,
-        eventId: eventId || '',
-        teamKey,
-        challengedByName: personName,
-        eventDescription: description,
-        challengeReason: reason,
+
+        varCaseId:
+          event.params.varCaseId,
+
+        eventId:
+          eventId || '',
+
+        teamId:
+          teamId || '',
+
+        teamKey:
+          teamKey || '',
+
+        challengedByName:
+          personName,
+
+        eventDescription:
+          description,
+
+        challengeReason:
+          reason,
       },
 
       webpush: {
