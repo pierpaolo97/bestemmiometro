@@ -480,9 +480,6 @@ async function notifyVarResult(varCase, result) {
     recipients
   )
 
-    console.log(
-      `${invalidTokens.length} token non validi rimossi dopo l'esito del VAR.`
-    )
   }
 
 async function finalizeVarCase(varCaseRef, varCase, result) {
@@ -773,11 +770,7 @@ exports.notifyNewVar = onDocumentCreated(
 
     await cleanupInvalidNotificationDevices(
       response,
-      ecipients
-    )
-
-    console.log(
-      `${invalidTokens.length} token non validi disabilitati.`
+      recipients
     )
   }
 )
