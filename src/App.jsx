@@ -29,10 +29,8 @@ import {
   GoogleAuthProvider,
   OAuthProvider,
   linkWithCredential,
-  getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
-  signInWithRedirect,
   signOut,
 } from 'firebase/auth'
 import {
@@ -73,6 +71,11 @@ export default function App() {
     const saved = localStorage.getItem(SESSION_KEY)
     return saved ? JSON.parse(saved) : null
   })
+
+  const [
+    submittingVarVoteId,
+    setSubmittingVarVoteId,
+  ] = useState(null)
 
   const [
     pendingMicrosoftCredential,
@@ -303,6 +306,25 @@ export default function App() {
   const [showNotificationModal, setShowNotificationModal] = useState(false)
   const [activeTab, setActiveTab] = useState('home')
 
+  function getNotificationDeviceId() {
+    const storageKey =
+      'bestemmiometro_notification_device_id'
+
+    let deviceId =
+      localStorage.getItem(storageKey)
+
+    if (!deviceId) {
+      deviceId = crypto.randomUUID()
+
+      localStorage.setItem(
+        storageKey,
+        deviceId
+      )
+    }
+
+    return deviceId
+  }
+
   async function enableNotifications() {
     setShowNotificationModal(false)
     try {
@@ -343,11 +365,35 @@ export default function App() {
         return
       }
 
-      await updateDoc(doc(db, 'users', currentUser.id), {
-        notificationToken: token,
-        notificationsEnabled: true,
-        updatedAt: serverTimestamp(),
-      })
+      const deviceId =
+        getNotificationDeviceId()
+
+      await setDoc(
+        doc(
+          db,
+          'notificationDevices',
+          deviceId
+        ),
+        {
+          authUid:
+            firebaseUser.uid,
+
+          token,
+
+          platform: 'web',
+
+          enabled: true,
+
+          createdAt:
+            serverTimestamp(),
+
+          updatedAt:
+            serverTimestamp(),
+        },
+        {
+          merge: true,
+        }
+      )
 
       const updatedUser = { ...currentUser, notificationToken: token, notificationsEnabled: true }
       localStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser))
@@ -358,32 +404,6 @@ export default function App() {
       showToast('Errore attivazione notifiche.', 'danger')
     }
   }
-
-  useEffect(() => {
-    async function handleAuthRedirectResult() {
-      try {
-        await getRedirectResult(auth)
-      } catch (error) {
-        console.error(
-          'Errore risultato redirect autenticazione:',
-          error
-        )
-
-        const messages = {
-          'auth/account-exists-with-different-credential':
-            'Esiste già un account con questa email collegato a un altro metodo di accesso.',
-        }
-
-        showToast(
-          messages[error.code] ||
-            'Accesso non riuscito.',
-          'danger'
-        )
-      }
-    }
-
-    handleAuthRedirectResult()
-  }, [])
 
   useEffect(() => {
     if (
@@ -524,7 +544,7 @@ export default function App() {
   }, [activeTeam])
 
   useEffect(() => {
-    if (!currentUser?.teamKey) return
+    if (!currentUser?.teamId) return
 
     const usersQuery = query(
       collection(db, 'users'),
@@ -1545,6 +1565,25 @@ export default function App() {
     )
   }
 
+  function getNotificationDeviceId() {
+    const storageKey =
+      'bestemmiometro_notification_device_id'
+
+    let deviceId =
+      localStorage.getItem(storageKey)
+
+    if (!deviceId) {
+      deviceId = crypto.randomUUID()
+
+      localStorage.setItem(
+        storageKey,
+        deviceId
+      )
+    }
+
+    return deviceId
+  }
+
   function cancelTeamSettingsEdit() {
     if (!activeTeam) return
 
@@ -1987,15 +2026,6 @@ export default function App() {
           navigator.userAgent
         )
 
-      if (isMobileDevice) {
-        await signInWithRedirect(
-          auth,
-          microsoftProvider
-        )
-
-        return
-      }
-
       await signInWithPopup(
         auth,
         microsoftProvider
@@ -2061,21 +2091,6 @@ export default function App() {
 
   async function loginWithGoogle() {
     try {
-      const isMobileDevice =
-        /Android|iPhone|iPad|iPod/i.test(
-          navigator.userAgent
-        )
-
-      if (isMobileDevice) {
-        await signInWithRedirect(
-          auth,
-          googleProvider
-        )
-
-        return
-      }
-
-
       const result =
         await signInWithPopup(
           auth,
@@ -2670,8 +2685,8 @@ export default function App() {
       const createdEvent = await addDoc(
         collection(db, 'events'),
         {
-          teamKey: currentUser.teamKey,
-          teamId: activeTeam?.id || currentUser.teamId || null,
+          teamId: activeTeam?.id || currentUser.teamId,
+          teamKey: currentUser.teamKey || null,
           targetId: target.id,
           targetName: target.username,
           targetRole: target.role,
@@ -3025,7 +3040,13 @@ export default function App() {
   async function voteVar(varCase, vote) {
     if (!currentUser) return
 
-    if (!['approve', 'reject'].includes(vote)) return
+    if (!['approve', 'reject'].includes(vote)) {
+      return
+    }
+
+    if (submittingVarVoteId === varCase.id) {
+      return
+    }
 
     if (!canCurrentUserVote(varCase)) {
       showToast(
@@ -3035,61 +3056,95 @@ export default function App() {
       return
     }
 
+    setSubmittingVarVoteId(varCase.id)
+
     try {
-      const varCaseRef = doc(db, 'varCases', varCase.id)
+      const varCaseRef = doc(
+        db,
+        'varCases',
+        varCase.id
+      )
 
-      await runTransaction(db, async (transaction) => {
-        const varCaseSnapshot = await transaction.get(varCaseRef)
+      await runTransaction(
+        db,
+        async (transaction) => {
+          const varCaseSnapshot =
+            await transaction.get(varCaseRef)
 
-        if (!varCaseSnapshot.exists()) {
-          throw new Error('VAR_NOT_FOUND')
+          if (!varCaseSnapshot.exists()) {
+            throw new Error('VAR_NOT_FOUND')
+          }
+
+          const currentData =
+            varCaseSnapshot.data()
+
+          if (currentData.status !== 'open') {
+            throw new Error('VAR_CLOSED')
+          }
+
+          if (
+            currentData.expiresAt?.toDate &&
+            currentData.expiresAt
+              .toDate()
+              .getTime() <= Date.now()
+          ) {
+            throw new Error('VAR_EXPIRED')
+          }
+
+          if (
+            !currentData.eligibleVoterIds?.includes(
+              currentUser.id
+            )
+          ) {
+            throw new Error('NOT_ELIGIBLE')
+          }
+
+          transaction.update(
+            varCaseRef,
+            {
+              [`votes.${currentUser.id}`]:
+                vote,
+
+              updatedAt:
+                serverTimestamp(),
+            }
+          )
         }
-
-        const currentData = varCaseSnapshot.data()
-
-        if (currentData.status !== 'open') {
-          throw new Error('VAR_CLOSED')
-        }
-
-        if (
-          currentData.expiresAt?.toDate &&
-          currentData.expiresAt.toDate().getTime() <= Date.now()
-        ) {
-          throw new Error('VAR_EXPIRED')
-        }
-
-        if (
-          !currentData.eligibleVoterIds?.includes(currentUser.id)
-        ) {
-          throw new Error('NOT_ELIGIBLE')
-        }
-
-        transaction.update(varCaseRef, {
-          [`votes.${currentUser.id}`]: vote,
-          updatedAt: serverTimestamp(),
-        })
-      })
+      )
 
       showToast(
         vote === 'approve'
-          ? 'Voto registrato: annulla la bestemmia.'
-          : 'Voto registrato: mantieni la bestemmia.',
+          ? 'Voto aggiornato: annulla la bestemmia.'
+          : 'Voto aggiornato: mantieni la bestemmia.',
         'success'
       )
     } catch (error) {
-      console.error('Errore voto VAR:', error)
+      console.error(
+        'Errore voto VAR:',
+        error
+      )
 
       const messages = {
-        VAR_NOT_FOUND: 'La contestazione non esiste più.',
-        VAR_CLOSED: 'La votazione è già terminata.',
-        NOT_ELIGIBLE: 'Non sei autorizzato a votare.',
-        VAR_EXPIRED: 'La votazione è scaduta.',
+        VAR_NOT_FOUND:
+          'La contestazione non esiste più.',
+
+        VAR_CLOSED:
+          'La votazione è già terminata.',
+
+        NOT_ELIGIBLE:
+          'Non sei autorizzato a votare.',
+
+        VAR_EXPIRED:
+          'La votazione è scaduta.',
       }
 
       showToast(
-        messages[error.message] || 'Errore durante la votazione.',
+        messages[error.message] ||
+          'Errore durante la votazione.',
         'danger'
       )
+    } finally {
+      setSubmittingVarVoteId(null)
     }
   }
 
@@ -3616,7 +3671,85 @@ export default function App() {
             Crea un nuovo gruppo
           </button>
         </section>
+        {showCreateTeam && (
+          <div
+            className="modal-backdrop"
+            onClick={() =>
+              setShowCreateTeam(false)
+            }
+          >
+            <div
+              className="modal create-team-modal"
+              onClick={(event) =>
+                event.stopPropagation()
+              }
+            >
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setShowCreateTeam(false)
+                }
+              >
+                <X />
+              </button>
 
+              <h2>Crea un nuovo gruppo</h2>
+
+              <p>
+                Sarai automaticamente owner del nuovo gruppo.
+              </p>
+
+              <form
+                className="create-team-form"
+                onSubmit={createTeam}
+              >
+                <label>
+                  <span>Nome gruppo</span>
+
+                  <input
+                    type="text"
+                    value={newTeamName}
+                    onChange={(event) =>
+                      setNewTeamName(
+                        event.target.value
+                      )
+                    }
+                    placeholder="Es. Team Progetto X"
+                  />
+                </label>
+
+                <label>
+                  <span>Il tuo username</span>
+
+                  <input
+                    type="text"
+                    value={newTeamUsername}
+                    onChange={(event) =>
+                      setNewTeamUsername(
+                        event.target.value
+                      )
+                    }
+                    placeholder="Come vuoi apparire in classifica"
+                  />
+                </label>
+
+                <button
+                  type="submit"
+                  disabled={
+                    isCreatingTeam ||
+                    !newTeamName.trim() ||
+                    !newTeamUsername.trim()
+                  }
+                >
+                  {isCreatingTeam
+                    ? 'Creazione...'
+                    : 'Crea gruppo'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
         {/* INVITO APERTO DAL LINK */}
         {showJoinTeam && (
           <div
@@ -3861,21 +3994,29 @@ export default function App() {
         {showCreateTeam && (
           <div
             className="modal-backdrop"
-            onClick={() => setShowCreateTeam(false)}
+            onClick={() =>
+              setShowCreateTeam(false)
+            }
           >
             <div
               className="modal create-team-modal"
-              onClick={(event) => event.stopPropagation()}
+              onClick={(event) =>
+                event.stopPropagation()
+              }
             >
               <button
                 type="button"
                 className="modal-close"
-                onClick={() => setShowCreateTeam(false)}
+                onClick={() =>
+                  setShowCreateTeam(false)
+                }
               >
                 <X />
               </button>
 
-              <h2>Crea un nuovo gruppo</h2>
+              <h2>
+                Crea un nuovo gruppo
+              </h2>
 
               <p>
                 Sarai automaticamente owner del nuovo gruppo.
@@ -3886,26 +4027,34 @@ export default function App() {
                 onSubmit={createTeam}
               >
                 <label>
-                  <span>Nome gruppo</span>
+                  <span>
+                    Nome gruppo
+                  </span>
 
                   <input
                     type="text"
                     value={newTeamName}
                     onChange={(event) =>
-                      setNewTeamName(event.target.value)
+                      setNewTeamName(
+                        event.target.value
+                      )
                     }
                     placeholder="Es. Team Progetto X"
                   />
                 </label>
 
                 <label>
-                  <span>Il tuo username</span>
+                  <span>
+                    Il tuo username
+                  </span>
 
                   <input
                     type="text"
                     value={newTeamUsername}
                     onChange={(event) =>
-                      setNewTeamUsername(event.target.value)
+                      setNewTeamUsername(
+                        event.target.value
+                      )
                     }
                     placeholder="Come vuoi apparire in classifica"
                   />
@@ -3913,15 +4062,8 @@ export default function App() {
 
                 <button
                   type="submit"
-                  disabled={
-                    isCreatingTeam ||
-                    !newTeamName.trim() ||
-                    !newTeamUsername.trim()
-                  }
                 >
-                  {isCreatingTeam
-                    ? 'Creazione...'
-                    : 'Crea gruppo'}
+                  Crea gruppo
                 </button>
               </form>
             </div>
@@ -4560,9 +4702,9 @@ export default function App() {
                             ❌ {voteCounts.rejections} contrari
                           </span>
 
-                          <span>
-                            Servono {varCase.requiredApprovals} approvazioni
-                          </span>
+                        <span>
+                          Soglia approvazione: {varCase.requiredApprovals}
+                        </span>
                         </div>
 
                         {canVote ? (
@@ -4574,7 +4716,12 @@ export default function App() {
                                   ? 'var-vote-button approve selected'
                                   : 'var-vote-button approve'
                               }
-                              onClick={() => voteVar(varCase, 'approve')}
+                              disabled={
+                                submittingVarVoteId === varCase.id
+                              }
+                              onClick={() =>
+                                voteVar(varCase, 'approve')
+                              }
                             >
                               ✅ Annulla
                             </button>
@@ -4586,7 +4733,12 @@ export default function App() {
                                   ? 'var-vote-button reject selected'
                                   : 'var-vote-button reject'
                               }
-                              onClick={() => voteVar(varCase, 'reject')}
+                              disabled={
+                                submittingVarVoteId === varCase.id
+                              }
+                              onClick={() =>
+                                voteVar(varCase, 'reject')
+                              }
                             >
                               ❌ Mantieni
                             </button>

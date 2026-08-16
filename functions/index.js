@@ -16,7 +16,109 @@ const {
 
 initializeApp()
 
+async function getTeamNotificationRecipients(
+  db,
+  teamId,
+  excludedAuthUids = []
+) {
+  /*
+   * 1. Trova tutte le membership attive del team.
+   */
+  const membersSnapshot = await db
+    .collection('users')
+    .where(
+      'teamId',
+      '==',
+      teamId
+    )
+    .where(
+      'accountStatus',
+      '==',
+      'active'
+    )
+    .get()
 
+  const authUids = [
+    ...new Set(
+      membersSnapshot.docs
+        .map(
+          (document) =>
+            document.data().authUid
+        )
+        .filter(Boolean)
+        .filter(
+          (authUid) =>
+            !excludedAuthUids.includes(
+              authUid
+            )
+        )
+    ),
+  ]
+
+  if (!authUids.length) {
+    return []
+  }
+
+  /*
+   * Firestore limita le query IN,
+   * quindi lavoriamo a blocchi.
+   */
+  const chunks = []
+
+  for (
+    let index = 0;
+    index < authUids.length;
+    index += 30
+  ) {
+    chunks.push(
+      authUids.slice(
+        index,
+        index + 30
+      )
+    )
+  }
+
+  const recipients = []
+
+  for (const chunk of chunks) {
+    const devicesSnapshot = await db
+      .collection(
+        'notificationDevices'
+      )
+      .where(
+        'authUid',
+        'in',
+        chunk
+      )
+      .where(
+        'enabled',
+        '==',
+        true
+      )
+      .get()
+
+    devicesSnapshot.docs.forEach(
+      (document) => {
+        const data = document.data()
+
+        if (!data.token) {
+          return
+        }
+
+        recipients.push({
+          id: document.id,
+          ref: document.ref,
+          authUid: data.authUid,
+          token: data.token,
+          platform:
+            data.platform || 'web',
+        })
+      }
+    )
+  }
+
+  return recipients
+}
 
 async function getAuthenticatedTeamProfile(
   transaction,
@@ -51,124 +153,241 @@ async function getAuthenticatedTeamProfile(
   }
 }
 
-exports.notifyNewEvent = onDocumentCreated(
-  'events/{eventId}',
-  async (event) => {
-    try {
-      const data = event.data.data()
+async function cleanupInvalidNotificationDevices(
+  response,
+  recipients
+) {
+  const invalidRefs = []
 
-      if (!data?.teamId) {
-        console.log(
-          'Evento senza teamId'
-        )
-
+  response.responses.forEach(
+    (result, index) => {
+      if (result.success) {
         return
       }
 
-      const db = getFirestore()
+      const errorCode =
+        result.error?.code
 
-      const usersSnapshot = await db
-        .collection('users')
-        .where(
-          'teamId',
-          '==',
-          data.teamId
-        )
-        .where(
-          'accountStatus',
-          '==',
-          'active'
-        )
-        .where(
-          'notificationsEnabled',
-          '==',
-          true
-        )
-        .get()
+      console.error(
+        'Errore notifica:',
+        errorCode,
+        result.error?.message
+      )
 
-      let tokens = usersSnapshot.docs
-        .filter((doc) => doc.id !== data.createdById)
-        .map((doc) => doc.data().notificationToken)
-        .filter(Boolean)
+      if (
+        errorCode ===
+          'messaging/registration-token-not-registered' ||
+        errorCode ===
+          'messaging/invalid-registration-token'
+      ) {
+        const recipient =
+          recipients[index]
 
-      if (tokens.length > 50) {
-        tokens = tokens.slice(0, 50)
+        if (recipient?.ref) {
+          invalidRefs.push(
+            recipient.ref
+          )
+        }
       }
+    }
+  )
 
-      console.log('Token trovati:', tokens.length)
+  if (!invalidRefs.length) {
+    return
+  }
 
-      if (!tokens.length) {
-        console.log('Nessun token disponibile')
-        return
-      }
+  const db = getFirestore()
+  const batch = db.batch()
 
-      const notificationConfig = {
-        bestemmia: {
-          title: '🔥 Nuova bestemmia',
-          body: `Assegnata a ${data.targetName}`,
-        },
+  invalidRefs.forEach((ref) => {
+    batch.delete(ref)
+  })
 
-        benedizione: {
-          title: '🙏 Nuova benedizione',
-          body: `Assegnata a ${data.targetName}`,
-        },
+  await batch.commit()
 
-        superbestemmia: {
-          title: '💀 Superbestemmia',
-          body: `Assegnata a ${data.targetName}`,
-        },
-      }
+  console.log(
+    `${invalidRefs.length} dispositivi FCM non validi rimossi.`
+  )
+}
 
-      const notification =
-        notificationConfig[data.type] || {
-          title: 'Bestemmiometro',
-          body: 'Nuovo evento registrato',
+exports.notifyNewEvent =
+  onDocumentCreated(
+    {
+      document: 'events/{eventId}',
+      region: 'europe-west8',
+    },
+    async (event) => {
+      try {
+        const data =
+          event.data?.data()
+
+        if (!data?.teamId) {
+          console.log(
+            'Evento senza teamId.'
+          )
+          return
         }
 
-      const result = await getMessaging().sendEachForMulticast({
-        tokens,
+        const db =
+          getFirestore()
 
-        notification: {
-          title: notification.title,
-          body: notification.body,
-        },
+        /*
+         * Troviamo eventualmente
+         * l'authUid di chi ha creato
+         * l'evento.
+         */
+        let excludedAuthUids = []
 
-        data: {
-          type: 'event-created',
-          eventType: data.type || '',
-          targetId: data.targetId || '',
-          targetName: data.targetName || '',
-          eventId: event.params.eventId || '',
-        },
+        if (data.createdById) {
+          const creatorSnapshot =
+            await db
+              .collection('users')
+              .doc(data.createdById)
+              .get()
 
-        webpush: {
-          fcmOptions: {
-            link: 'https://pierpaolo97.github.io/bestemmiometro/',
+          if (
+            creatorSnapshot.exists &&
+            creatorSnapshot.data()
+              ?.authUid
+          ) {
+            excludedAuthUids = [
+              creatorSnapshot.data()
+                .authUid,
+            ]
+          }
+        }
+
+        const recipients =
+          await getTeamNotificationRecipients(
+            db,
+            data.teamId,
+            excludedAuthUids
+          )
+
+        if (!recipients.length) {
+          console.log(
+            'Nessun dispositivo da notificare.'
+          )
+          return
+        }
+
+        const tokens = [
+          ...new Set(
+            recipients.map(
+              (recipient) =>
+                recipient.token
+            )
+          ),
+        ].slice(0, 500)
+
+        const notificationConfig = {
+          bestemmia: {
+            title:
+              '🔥 Nuova bestemmia',
+
+            body:
+              `Assegnata a ${data.targetName}`,
           },
 
-          notification: {
-            tag: `bestemmiometro-${event.params.eventId}`,
-            icon:
-              'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+          benedizione: {
+            title:
+              '🙏 Nuova benedizione',
 
-            badge:
-              'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+            body:
+              `Assegnata a ${data.targetName}`,
           },
-        },
-      })
 
-      console.log(
-        `Notifiche inviate. Success: ${result.successCount}`
-      )
+          superbestemmia: {
+            title:
+              '💀 Nuova superbestemmia',
 
-      console.log(
-        `Notifiche fallite: ${result.failureCount}`
-      )
-    } catch (error) {
-      console.error('Errore notifyNewEvent:', error)
+            body:
+              `Assegnata a ${data.targetName}`,
+          },
+        }
+
+        const notification =
+          notificationConfig[
+            data.type
+          ] || {
+            title:
+              'Bestemmiometro',
+
+            body:
+              'Nuovo evento registrato',
+          }
+
+        const response =
+          await getMessaging()
+            .sendEachForMulticast({
+              tokens,
+
+              notification: {
+                title:
+                  notification.title,
+
+                body:
+                  notification.body,
+              },
+
+              data: {
+                type:
+                  'event-created',
+
+                eventType:
+                  data.type || '',
+
+                teamId:
+                  data.teamId || '',
+
+                teamKey:
+                  data.teamKey || '',
+
+                targetId:
+                  data.targetId || '',
+
+                targetName:
+                  data.targetName || '',
+
+                eventId:
+                  event.params.eventId,
+              },
+
+              webpush: {
+                fcmOptions: {
+                  link:
+                    'https://pierpaolo97.github.io/bestemmiometro/',
+                },
+
+                notification: {
+                  tag:
+                    `bestemmiometro-${event.params.eventId}`,
+
+                  icon:
+                    'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+
+                  badge:
+                    'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+                },
+              },
+            })
+
+        console.log(
+          `Evento: ${response.successCount} notifiche inviate, ${response.failureCount} fallite.`
+        )
+
+        await cleanupInvalidNotificationDevices(
+          response,
+          recipients
+        )
+      } catch (error) {
+        console.error(
+          'Errore notifyNewEvent:',
+          error
+        )
+      }
     }
-  }
-)
+  )
 
 async function notifyVarResult(varCase, result) {
   const db = getFirestore()
@@ -180,44 +399,26 @@ async function notifyVarResult(varCase, result) {
     return
   }
 
-  const usersSnapshot = await db
-    .collection('users')
-    .where(
-      'teamId',
-      '==',
+  const recipients =
+    await getTeamNotificationRecipients(
+      db,
       varCase.teamId
     )
-    .where(
-      'accountStatus',
-      '==',
-      'active'
-    )
-    .where(
-      'notificationsEnabled',
-      '==',
-      true
-    )
-    .get()
-
-  const recipients = usersSnapshot.docs
-    .map((document) => ({
-      id: document.id,
-      notificationToken: document.data().notificationToken,
-    }))
-    .filter((user) => Boolean(user.notificationToken))
 
   if (!recipients.length) {
     console.log(
-      `Nessun token disponibile per l'esito del VAR ${varCase.eventId}.`
+      `Nessun dispositivo disponibile per l'esito del VAR ${varCase.eventId}.`
     )
+
     return
   }
 
-  const tokens = [
-    ...new Set(
-      recipients.map((user) => user.notificationToken)
-    ),
-  ].slice(0, 500)
+  const tokens = recipients
+    .map(
+      (recipient) =>
+        recipient.token
+    )
+    .slice(0, 500)
 
   const title =
     result === 'approved'
@@ -243,7 +444,8 @@ async function notifyVarResult(varCase, result) {
         result,
         eventId: varCase.eventId || '',
         varCaseId: varCase.eventId || '',
-        teamKey: varCase.teamId || '',
+        teamId: varCase.teamId || '',
+        teamKey: varCase.teamKey || '',
         targetName: varCase.targetName || '',
       },
 
@@ -273,57 +475,15 @@ async function notifyVarResult(varCase, result) {
     `Notifica esito VAR inviata. Successi: ${response.successCount}, fallimenti: ${response.failureCount}`
   )
 
-  const invalidTokens = []
-
-  response.responses.forEach((item, index) => {
-    if (item.success) return
-
-    const errorCode = item.error?.code
-
-    console.error(
-      `Errore notifica esito VAR token ${index}:`,
-      errorCode,
-      item.error?.message
-    )
-
-    if (
-      errorCode ===
-        'messaging/registration-token-not-registered' ||
-      errorCode ===
-        'messaging/invalid-registration-token'
-    ) {
-      invalidTokens.push(tokens[index])
-    }
-  })
-
-  if (!invalidTokens.length) {
-    return
-  }
-
-  const batch = db.batch()
-
-  recipients
-    .filter((user) =>
-      invalidTokens.includes(user.notificationToken)
-    )
-    .forEach((user) => {
-      const userRef = db
-        .collection('users')
-        .doc(user.id)
-
-      batch.update(userRef, {
-        notificationToken: null,
-        notificationsEnabled: false,
-        updatedAt: new Date(),
-      })
-    })
-
-  await batch.commit()
-
-  console.log(
-    `${invalidTokens.length} token non validi rimossi dopo l'esito del VAR.`
+  await cleanupInvalidNotificationDevices(
+    response,
+    recipients
   )
-}
+
+    console.log(
+      `${invalidTokens.length} token non validi rimossi dopo l'esito del VAR.`
+    )
+  }
 
 async function finalizeVarCase(varCaseRef, varCase, result) {
   const db = getFirestore()
@@ -422,35 +582,10 @@ exports.resolveVarOnVote = onDocumentUpdated(
       return
     }
 
-    const votes = Object.values(after.votes || {})
-
-    const approvals = votes.filter(
-      (vote) => vote === 'approve'
-    ).length
-
-    const rejections = votes.filter(
-      (vote) => vote === 'reject'
-    ).length
-
-    const requiredApprovals = after.requiredApprovals || 1
-
-    if (approvals >= requiredApprovals) {
-      await finalizeVarCase(
-        event.data.after.ref,
-        after,
-        'approved'
-      )
-
-      return
-    }
-
-    if (rejections >= requiredApprovals) {
-      await finalizeVarCase(
-        event.data.after.ref,
-        after,
-        'rejected'
-      )
-    }
+    console.log(
+      `Voto aggiornato sul VAR ${event.params.varCaseId}. ` +
+      'Il VAR resterà aperto fino alla scadenza.'
+    )
   }
 )
 
@@ -524,35 +659,48 @@ exports.notifyNewVar = onDocumentCreated(
 
     const db = getFirestore()
 
-    const usersSnapshot = await db
-      .collection('users')
-      .where('teamId', '==', teamId)
-      .where('notificationsEnabled', '==', true)
-      .get()
+    const challengedUserSnapshot =
+      challengedById
+        ? await db
+            .collection('users')
+            .doc(challengedById)
+            .get()
+        : null
 
-    const recipients = usersSnapshot.docs
-      .map((document) => ({
-        id: document.id,
-        ...document.data(),
-      }))
-      .filter(
-        (user) =>
-          Boolean(user.notificationToken) &&
-          user.id !== varCase.challengedById
+    const excludedAuthUids = []
+
+    if (
+      challengedUserSnapshot?.exists &&
+      challengedUserSnapshot.data()
+        ?.authUid
+    ) {
+      excludedAuthUids.push(
+        challengedUserSnapshot.data()
+          .authUid
+      )
+    }
+
+    const recipients =
+      await getTeamNotificationRecipients(
+        db,
+        teamId,
+        excludedAuthUids
       )
 
-    if (recipients.length === 0) {
+    if (!recipients.length) {
       console.log(
         `Nessun destinatario disponibile per il VAR ${event.params.varCaseId}.`
       )
+
       return
     }
 
-    const tokens = [
-      ...new Set(
-        recipients.map((user) => user.notificationToken)
-      ),
-    ].slice(0, 500)
+    const tokens =
+      recipients.map(
+        (recipient) =>
+          recipient.token
+      )
+
 
     const personName =
       challengedByName ||
@@ -622,46 +770,11 @@ exports.notifyNewVar = onDocumentCreated(
       `${response.failureCount} fallite.`
     )
 
-    const invalidTokens = []
 
-    response.responses.forEach((result, index) => {
-      if (result.success) return
-
-      const errorCode = result.error?.code
-
-      console.error(
-        `Errore invio token ${index}:`,
-        errorCode,
-        result.error?.message
-      )
-
-      if (
-        errorCode === 'messaging/registration-token-not-registered' ||
-        errorCode === 'messaging/invalid-registration-token'
-      ) {
-        invalidTokens.push(tokens[index])
-      }
-    })
-
-    if (invalidTokens.length === 0) return
-
-    const batch = db.batch()
-
-    recipients
-      .filter((user) =>
-        invalidTokens.includes(user.notificationToken)
-      )
-      .forEach((user) => {
-        batch.update(
-          db.collection('users').doc(user.id),
-          {
-            notificationToken: null,
-            notificationsEnabled: false,
-          }
-        )
-      })
-
-    await batch.commit()
+    await cleanupInvalidNotificationDevices(
+      response,
+      ecipients
+    )
 
     console.log(
       `${invalidTokens.length} token non validi disabilitati.`
