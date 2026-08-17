@@ -66,6 +66,187 @@ microsoftProvider.setCustomParameters({
   prompt: 'select_account',
 })
 
+function CreateTeamModal({
+  open,
+  onClose,
+  onSubmit,
+  teamName,
+  setTeamName,
+  username,
+  setUsername,
+  loading,
+}) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onClick={onClose}
+    >
+      <div
+        className="modal create-team-modal"
+        onClick={(event) =>
+          event.stopPropagation()
+        }
+      >
+        <button
+          type="button"
+          className="modal-close"
+          onClick={onClose}
+        >
+          <X />
+        </button>
+
+        <h2>Crea un nuovo gruppo</h2>
+
+        <p>
+          Sarai automaticamente owner
+          del nuovo gruppo.
+        </p>
+
+        <form
+          className="create-team-form"
+          onSubmit={onSubmit}
+        >
+          <label>
+            <span>Nome gruppo</span>
+
+            <input
+              type="text"
+              value={teamName}
+              onChange={(event) =>
+                setTeamName(
+                  event.target.value
+                )
+              }
+              placeholder="Es. Team Progetto X"
+            />
+          </label>
+
+          <label>
+            <span>Il tuo username</span>
+
+            <input
+              type="text"
+              value={username}
+              onChange={(event) =>
+                setUsername(
+                  event.target.value
+                )
+              }
+              placeholder="Come vuoi apparire in classifica"
+            />
+          </label>
+
+          <button
+            type="submit"
+            disabled={
+              loading ||
+              !teamName.trim() ||
+              !username.trim()
+            }
+          >
+            {loading
+              ? 'Creazione...'
+              : 'Crea gruppo'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function JoinTeamModal({
+  open,
+  onClose,
+  code,
+  setCode,
+  preview,
+  searching,
+  requesting,
+  onSearch,
+  onRequestJoin,
+}) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onClick={onClose}
+    >
+      <div
+        className="modal join-team-modal"
+        onClick={(event) =>
+          event.stopPropagation()
+        }
+      >
+        <button
+          type="button"
+          className="modal-close"
+          onClick={onClose}
+        >
+          <X />
+        </button>
+
+        <h2>Entra in un gruppo</h2>
+
+        <p>
+          Inserisci il codice invito
+          del gruppo.
+        </p>
+
+        <input
+          type="text"
+          value={code}
+          onChange={(event) =>
+            setCode(
+              event.target.value.toUpperCase()
+            )
+          }
+          placeholder="Codice invito"
+        />
+
+        <button
+          type="button"
+          onClick={onSearch}
+          disabled={
+            searching ||
+            !code.trim()
+          }
+        >
+          {searching
+            ? 'Ricerca...'
+            : 'Cerca gruppo'}
+        </button>
+
+        {preview && (
+          <div className="join-team-preview">
+            <p>Gruppo trovato</p>
+
+            <strong>
+              {preview.name}
+            </strong>
+
+            <button
+              type="button"
+              onClick={onRequestJoin}
+              disabled={requesting}
+            >
+              {requesting
+                ? 'Invio richiesta...'
+                : 'Richiedi accesso'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem(SESSION_KEY)
@@ -306,6 +487,11 @@ export default function App() {
   const [showNotificationModal, setShowNotificationModal] = useState(false)
   const [activeTab, setActiveTab] = useState('home')
 
+  const [
+    notificationsEnabled,
+    setNotificationsEnabled
+  ] = useState(false)
+
   function getNotificationDeviceId() {
     const storageKey =
       'bestemmiometro_notification_device_id'
@@ -394,10 +580,6 @@ export default function App() {
           merge: true,
         }
       )
-
-      const updatedUser = { ...currentUser, notificationToken: token, notificationsEnabled: true }
-      localStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser))
-      setCurrentUser(updatedUser)
       showToast('Notifiche abilitate.', 'success')
     } catch (error) {
       console.error('Errore notifiche:', error)
@@ -679,7 +861,7 @@ export default function App() {
 
     // Se Firebase dice che le notifiche sono già attive,
     // non chiedere più nulla.
-    if (currentUser.notificationsEnabled === true) {
+    if (notificationsEnabled === true) {
       setShowNotificationModal(false)
       return
     }
@@ -1563,25 +1745,6 @@ export default function App() {
       '',
       cleanUrl
     )
-  }
-
-  function getNotificationDeviceId() {
-    const storageKey =
-      'bestemmiometro_notification_device_id'
-
-    let deviceId =
-      localStorage.getItem(storageKey)
-
-    if (!deviceId) {
-      deviceId = crypto.randomUUID()
-
-      localStorage.setItem(
-        storageKey,
-        deviceId
-      )
-    }
-
-    return deviceId
   }
 
   function cancelTeamSettingsEdit() {
@@ -3671,148 +3834,34 @@ export default function App() {
             Crea un nuovo gruppo
           </button>
         </section>
-        {showCreateTeam && (
-          <div
-            className="modal-backdrop"
-            onClick={() =>
-              setShowCreateTeam(false)
-            }
-          >
-            <div
-              className="modal create-team-modal"
-              onClick={(event) =>
-                event.stopPropagation()
-              }
-            >
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() =>
-                  setShowCreateTeam(false)
-                }
-              >
-                <X />
-              </button>
-
-              <h2>Crea un nuovo gruppo</h2>
-
-              <p>
-                Sarai automaticamente owner del nuovo gruppo.
-              </p>
-
-              <form
-                className="create-team-form"
-                onSubmit={createTeam}
-              >
-                <label>
-                  <span>Nome gruppo</span>
-
-                  <input
-                    type="text"
-                    value={newTeamName}
-                    onChange={(event) =>
-                      setNewTeamName(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Es. Team Progetto X"
-                  />
-                </label>
-
-                <label>
-                  <span>Il tuo username</span>
-
-                  <input
-                    type="text"
-                    value={newTeamUsername}
-                    onChange={(event) =>
-                      setNewTeamUsername(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Come vuoi apparire in classifica"
-                  />
-                </label>
-
-                <button
-                  type="submit"
-                  disabled={
-                    isCreatingTeam ||
-                    !newTeamName.trim() ||
-                    !newTeamUsername.trim()
-                  }
-                >
-                  {isCreatingTeam
-                    ? 'Creazione...'
-                    : 'Crea gruppo'}
-                </button>
-              </form>
-            </div>
-          </div>
-        )}
+        <CreateTeamModal
+          open={showCreateTeam}
+          onClose={() =>
+            setShowCreateTeam(false)
+          }
+          onSubmit={createTeam}
+          teamName={newTeamName}
+          setTeamName={setNewTeamName}
+          username={newTeamUsername}
+          setUsername={setNewTeamUsername}
+          loading={isCreatingTeam}
+        />
         {/* INVITO APERTO DAL LINK */}
-        {showJoinTeam && (
-          <div
-            className="modal-backdrop"
-            onClick={() =>
-              setShowJoinTeam(false)
-            }
-          >
-            <div
-              className="modal join-team-modal"
-              onClick={(event) =>
-                event.stopPropagation()
-              }
-            >
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() =>
-                  setShowJoinTeam(false)
-                }
-              >
-                <X />
-              </button>
-
-              <h2>Entra in un gruppo</h2>
-
-              <p>
-                Sei stato invitato a entrare in questo gruppo.
-              </p>
-
-              {joinTeamPreview ? (
-                <div className="join-team-preview">
-                  <span>
-                    Gruppo trovato
-                  </span>
-
-                  <strong>
-                    {joinTeamPreview.name}
-                  </strong>
-
-                  <small>
-                    Codice:{' '}
-                    {joinTeamPreview.inviteCode}
-                  </small>
-
-                  <button
-                    type="button"
-                    onClick={requestJoinTeam}
-                    disabled={isRequestingJoin}
-                  >
-                    {isRequestingJoin
-                      ? 'Invio richiesta...'
-                      : 'Richiedi accesso'}
-                  </button>
-                </div>
-              ) : (
-                <p>
-                  Caricamento gruppo...
-                </p>
-              )}
-            </div>
-          </div>
-        )}
+        <JoinTeamModal
+          open={showJoinTeam}
+          onClose={closeJoinFlow}
+          joinTeamCode={joinTeamCode}
+          setJoinTeamCode={setJoinTeamCode}
+          joinTeamPreview={joinTeamPreview}
+          isSearchingJoinTeam={
+            isSearchingJoinTeam
+          }
+          isRequestingJoin={
+            isRequestingJoin
+          }
+          onSearch={searchJoinTeam}
+          onRequestJoin={requestJoinTeam}
+        />
       </main>
     )
   }
@@ -3991,155 +4040,34 @@ export default function App() {
 
         </section>
 
-        {showCreateTeam && (
-          <div
-            className="modal-backdrop"
-            onClick={() =>
-              setShowCreateTeam(false)
-            }
-          >
-            <div
-              className="modal create-team-modal"
-              onClick={(event) =>
-                event.stopPropagation()
-              }
-            >
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() =>
-                  setShowCreateTeam(false)
-                }
-              >
-                <X />
-              </button>
+        <CreateTeamModal
+          open={showCreateTeam}
+          onClose={() =>
+            setShowCreateTeam(false)
+          }
+          onSubmit={createTeam}
+          teamName={newTeamName}
+          setTeamName={setNewTeamName}
+          username={newTeamUsername}
+          setUsername={setNewTeamUsername}
+          loading={isCreatingTeam}
+        />
 
-              <h2>
-                Crea un nuovo gruppo
-              </h2>
-
-              <p>
-                Sarai automaticamente owner del nuovo gruppo.
-              </p>
-
-              <form
-                className="create-team-form"
-                onSubmit={createTeam}
-              >
-                <label>
-                  <span>
-                    Nome gruppo
-                  </span>
-
-                  <input
-                    type="text"
-                    value={newTeamName}
-                    onChange={(event) =>
-                      setNewTeamName(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Es. Team Progetto X"
-                  />
-                </label>
-
-                <label>
-                  <span>
-                    Il tuo username
-                  </span>
-
-                  <input
-                    type="text"
-                    value={newTeamUsername}
-                    onChange={(event) =>
-                      setNewTeamUsername(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Come vuoi apparire in classifica"
-                  />
-                </label>
-
-                <button
-                  type="submit"
-                >
-                  Crea gruppo
-                </button>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {showJoinTeam && (
-          <div
-            className="modal-backdrop"
-            onClick={() => setShowJoinTeam(false)}
-          >
-            <div
-              className="modal join-team-modal"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setShowJoinTeam(false)}
-              >
-                <X />
-              </button>
-
-              <h2>Entra in un gruppo</h2>
-
-              <p>
-                Inserisci la Team Key del gruppo.
-              </p>
-
-              <form
-                className="join-team-form"
-                onSubmit={searchTeamByInviteCode}
-              >
-                <input
-                  type="text"
-                  value={joinTeamCode}
-                  onChange={(event) =>
-                    setJoinTeamCode(
-                      event.target.value.toUpperCase()
-                    )
-                  }
-                  placeholder="Team Key"
-                />
-
-                <button
-                  type="submit"
-                  disabled={isSearchingJoinTeam}
-                >
-                  {isSearchingJoinTeam
-                    ? 'Ricerca...'
-                    : 'Cerca gruppo'}
-                </button>
-              </form>
-
-              {joinTeamPreview && (
-                <div className="join-team-preview">
-                  <span>Gruppo trovato</span>
-
-                  <strong>
-                    {joinTeamPreview.name}
-                  </strong>
-
-                  <button
-                    type="button"
-                    disabled={isRequestingJoin}
-                    onClick={requestJoinTeam}
-                  >
-                    {isRequestingJoin
-                      ? 'Invio richiesta...'
-                      : 'Richiedi accesso'}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        <JoinTeamModal
+          open={showJoinTeam}
+          onClose={closeJoinFlow}
+          joinTeamCode={joinTeamCode}
+          setJoinTeamCode={setJoinTeamCode}
+          joinTeamPreview={joinTeamPreview}
+          isSearchingJoinTeam={
+            isSearchingJoinTeam
+          }
+          isRequestingJoin={
+            isRequestingJoin
+          }
+          onSearch={searchJoinTeam}
+          onRequestJoin={requestJoinTeam}
+        />
 
       </main>
     )
@@ -5360,7 +5288,7 @@ export default function App() {
                 <span>
                   <strong>Notifiche</strong>
                   <small>
-                    {currentUser.notificationsEnabled
+                    {notificationsEnabled
                       ? 'Notifiche abilitate'
                       : 'Abilita le notifiche push'}
                   </small>
@@ -5767,158 +5695,34 @@ export default function App() {
         </div>
       )}
 
-      {showCreateTeam && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowCreateTeam(false)}
-        >
-          <div
-            className="modal create-team-modal"
-            onClick={(event) =>
-              event.stopPropagation()
-            }
-          >
-            <button
-              type="button"
-              className="modal-close"
-              onClick={() =>
-                setShowCreateTeam(false)
-              }
-            >
-              <X />
-            </button>
+      <CreateTeamModal
+        open={showCreateTeam}
+        onClose={() =>
+          setShowCreateTeam(false)
+        }
+        onSubmit={createTeam}
+        teamName={newTeamName}
+        setTeamName={setNewTeamName}
+        username={newTeamUsername}
+        setUsername={setNewTeamUsername}
+        loading={isCreatingTeam}
+      />
 
-            <h2>Crea un nuovo gruppo</h2>
-
-            <p>
-              Sarai automaticamente owner del nuovo gruppo.
-            </p>
-
-            <form
-              className="create-team-form"
-              onSubmit={createTeam}
-            >
-              <label>
-                <span>Nome gruppo</span>
-
-                <input
-                  type="text"
-                  value={newTeamName}
-                  onChange={(event) =>
-                    setNewTeamName(event.target.value)
-                  }
-                  placeholder="Es. Team Progetto X"
-                />
-              </label>
-
-              <label>
-                <span>Il tuo username</span>
-
-                <input
-                  type="text"
-                  value={newTeamUsername}
-                  onChange={(event) =>
-                    setNewTeamUsername(
-                      event.target.value
-                    )
-                  }
-                  placeholder="Come vuoi apparire in classifica"
-                />
-              </label>
-
-              <button
-                type="submit"
-                disabled={
-                  isCreatingTeam ||
-                  !newTeamName.trim() ||
-                  !newTeamUsername.trim()
-                }
-              >
-                {isCreatingTeam
-                  ? 'Creazione...'
-                  : 'Crea gruppo'}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {showJoinTeam && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowJoinTeam(false)}
-        >
-          <div
-            className="modal join-team-modal"
-            onClick={(event) =>
-              event.stopPropagation()
-            }
-          >
-            <button
-              type="button"
-              className="modal-close"
-              onClick={() => setShowJoinTeam(false)}
-            >
-              <X />
-            </button>
-
-            <h2>Entra in un gruppo</h2>
-
-            <p>
-              Inserisci la Team Key del gruppo a cui vuoi unirti.
-            </p>
-
-            <form
-              className="join-team-form"
-              onSubmit={searchTeamByInviteCode}
-            >
-              <input
-                type="text"
-                value={joinTeamCode}
-                onChange={(event) =>
-                  setJoinTeamCode(
-                    event.target.value.toUpperCase()
-                  )
-                }
-                placeholder="Team Key"
-              />
-
-              <button
-                type="submit"
-                disabled={isSearchingJoinTeam}
-              >
-                {isSearchingJoinTeam
-                  ? 'Ricerca...'
-                  : 'Cerca gruppo'}
-              </button>
-            </form>
-
-            {joinTeamPreview && (
-              <div className="join-team-preview">
-                <span>Gruppo trovato</span>
-
-                <strong>
-                  {joinTeamPreview.name}
-                </strong>
-
-                <small>
-                  Codice: {joinTeamPreview.inviteCode}
-                </small>
-
-                <button
-                  type="button"
-                  onClick={requestJoinTeam}
-                  disabled={isRequestingJoin}
-                >
-                  {isRequestingJoin
-                    ? 'Invio richiesta...'
-                    : 'Richiedi accesso'}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <JoinTeamModal
+        open={showJoinTeam}
+        onClose={closeJoinFlow}
+        joinTeamCode={joinTeamCode}
+        setJoinTeamCode={setJoinTeamCode}
+        joinTeamPreview={joinTeamPreview}
+        isSearchingJoinTeam={
+          isSearchingJoinTeam
+        }
+        isRequestingJoin={
+          isRequestingJoin
+        }
+        onSearch={searchJoinTeam}
+        onRequestJoin={requestJoinTeam}
+      />
 
       {showNotificationModal && (
         <div

@@ -4089,17 +4089,6 @@ textarea {
   order: 2;
 }
 
-/* Ordine smartphone */
-@media (max-width: 480px) {
-  .events-page .invite-panel {
-    order: 1;
-  }
-
-  .events-page .add-event-panel {
-    order: 2;
-  }
-}
-
 .danger-zone-panel {
   border-color: #fecaca;
   background: #fffafa;

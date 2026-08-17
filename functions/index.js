@@ -16,6 +16,18 @@ const {
 
 initializeApp()
 
+function getAppBaseUrl() {
+  const url = process.env.APP_BASE_URL
+
+  if (!url) {
+    throw new Error(
+      'APP_BASE_URL non configurato.'
+    )
+  }
+
+  return url.replace(/\/+$/, '')
+}
+
 async function getTeamNotificationRecipients(
   db,
   teamId,
@@ -356,7 +368,7 @@ exports.notifyNewEvent =
               webpush: {
                 fcmOptions: {
                   link:
-                    'https://pierpaolo97.github.io/bestemmiometro/',
+                    `${getAppBaseUrl()}/`
                 },
 
                 notification: {
@@ -364,10 +376,10 @@ exports.notifyNewEvent =
                     `bestemmiometro-${event.params.eventId}`,
 
                   icon:
-                    'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+                    `${getAppBaseUrl()}/icons/icon-192.png`,
 
                   badge:
-                    'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+                    `${getAppBaseUrl()}/icons/icon-192.png`,
                 },
               },
             })
@@ -452,7 +464,7 @@ async function notifyVarResult(varCase, result) {
       webpush: {
         fcmOptions: {
           link:
-            'https://pierpaolo97.github.io/bestemmiometro/',
+            `${getAppBaseUrl()}/`,
         },
 
         notification: {
@@ -463,10 +475,10 @@ async function notifyVarResult(varCase, result) {
             `bestemmiometro-var-result-${varCase.eventId}`,
 
           icon:
-            'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+            `${getAppBaseUrl()}/icons/icon-192.png`,
 
           badge:
-            'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+            `${getAppBaseUrl()}/icons/icon-192.png`,
         },
       },
     })
@@ -628,7 +640,7 @@ exports.finalizeExpiredVarCases = onSchedule(
 exports.notifyNewVar = onDocumentCreated(
   {
     document: 'varCases/{varCaseId}',
-    region: 'us-central1',
+    region: 'europe-west8',
   },
   async (event) => {
     const varCase = event.data?.data()
@@ -748,8 +760,8 @@ exports.notifyNewVar = onDocumentCreated(
           title: '⚖️ Nuova richiesta VAR',
           body: `${personName} ha contestato: ${description}`,
 
-          icon: 'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
-          badge: 'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+          icon: `${getAppBaseUrl()}/icons/icon-192.png`,
+          badge: `${getAppBaseUrl()}/icons/icon-192.png`,
 
           tag: `bestemmiometro-var-${event.params.varCaseId}`,
 
@@ -757,7 +769,7 @@ exports.notifyNewVar = onDocumentCreated(
         },
 
         fcmOptions: {
-          link: 'https://pierpaolo97.github.io/bestemmiometro/',
+          link: `${getAppBaseUrl()}/`,
         },
       },
     })
