@@ -369,6 +369,34 @@ export default function App() {
     []
   )
 
+  const backfillTeamMembersCallable =
+  httpsCallable(
+    functions,
+    'backfillTeamMembers'
+  )
+
+  async function runTeamMembersBackfill() {
+    try {
+      const result =
+        await backfillTeamMembersCallable({
+          confirmation:
+            'BACKFILL_TEAM_MEMBERS',
+
+          dryRun: false,
+        })
+
+      console.log(
+        '[BACKFILL RESULT]',
+        result.data
+      )
+    } catch (error) {
+      console.error(
+        '[BACKFILL ERROR]',
+        error
+      )
+    }
+  }
+
   const rejectAccountLinkCallable = useMemo(
     () =>
       httpsCallable(
@@ -4781,6 +4809,15 @@ export default function App() {
 
         {activeTab === 'profile' && (
           <section className="page-view profile-page">
+            {isOwner &&
+            <button
+              type="button"
+              onClick={
+                runTeamMembersBackfill
+              }
+            >
+              Test backfill DEV
+            </button>}
             {isMaintainer &&
               pendingAccountLinkRequests.length > 0 && (
                 <section className="panel">
