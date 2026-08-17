@@ -222,6 +222,268 @@ async function cleanupInvalidNotificationDevices(
   )
 }
 
+ exports.setMemberRole = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const membershipId =
+      typeof request.data?.membershipId === 'string'
+        ? request.data.membershipId.trim()
+        : ''
+
+    const newRole =
+      typeof request.data?.accessRole === 'string'
+        ? request.data.accessRole.trim()
+        : ''
+
+    if (
+      !teamId ||
+      !membershipId ||
+      !['player', 'maintainer'].includes(newRole)
+    ) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Dati non validi.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const membershipRef =
+      db.collection('users').doc(membershipId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        if (reviewer.accessRole !== 'owner') {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo l’owner può modificare i ruoli.'
+          )
+        }
+
+        const membershipSnapshot =
+          await transaction.get(membershipRef)
+
+        if (!membershipSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Membro non trovato.'
+          )
+        }
+
+        const membership =
+          membershipSnapshot.data()
+
+        if (
+          membership.teamId !== teamId ||
+          membership.accountStatus !== 'active'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Membership non valida.'
+          )
+        }
+
+        if (
+          membership.accessRole === 'owner' ||
+          !membership.authUid
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il ruolo di questo membro non può essere modificato.'
+          )
+        }
+
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(membership.authUid)
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          membershipRef,
+          {
+            accessRole: newRole,
+            updatedAt: now,
+          }
+        )
+
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId,
+            accessRole: newRole,
+            accountStatus: 'active',
+            updatedAt: now,
+          },
+          {
+            merge: true,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+
+exports.removeTeamMember = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const membershipId =
+      typeof request.data?.membershipId === 'string'
+        ? request.data.membershipId.trim()
+        : ''
+
+    if (!teamId || !membershipId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Dati mancanti.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const membershipRef =
+      db.collection('users').doc(membershipId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        const membershipSnapshot =
+          await transaction.get(membershipRef)
+
+        if (!membershipSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Membro non trovato.'
+          )
+        }
+
+        const membership =
+          membershipSnapshot.data()
+
+        if (
+          membership.teamId !== teamId ||
+          membership.accountStatus !== 'active'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Membership non valida.'
+          )
+        }
+
+        if (
+          membership.authUid === request.auth.uid
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Non puoi rimuovere te stesso.'
+          )
+        }
+
+        if (membership.accessRole === 'owner') {
+          throw new HttpsError(
+            'failed-precondition',
+            'L’owner non può essere rimosso.'
+          )
+        }
+
+        const reviewerCanRemove =
+          reviewer.accessRole === 'owner' ||
+          (
+            reviewer.accessRole === 'maintainer' &&
+            membership.accessRole === 'player'
+          )
+
+        if (!reviewerCanRemove) {
+          throw new HttpsError(
+            'permission-denied',
+            'Non puoi rimuovere questo membro.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          membershipRef,
+          {
+            accountStatus: 'removed',
+            removedAt: now,
+            removedById: reviewer.id,
+            removedByName:
+              reviewer.username || null,
+            updatedAt: now,
+          }
+        )
+
+        if (membership.authUid) {
+          const teamMemberRef = db
+            .collection('teamMembers')
+            .doc(teamId)
+            .collection('members')
+            .doc(membership.authUid)
+
+          transaction.delete(teamMemberRef)
+        }
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
 exports.notifyNewEvent =
   onDocumentCreated(
     {
@@ -898,6 +1160,18 @@ exports.approveAccountLink = onCall(
         const legacyUser =
           legacyUserSnapshot.data()
 
+        if (!legacyUser.teamId) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Profilo legacy non ancora migrato.'
+          )
+        }
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(legacyUser.teamId)
+          .collection('members')
+          .doc(linkRequest.requestedByUid)
+
         if (
           legacyUser.teamKey !==
           linkRequest.teamKey
@@ -957,7 +1231,25 @@ exports.approveAccountLink = onCall(
 
         const now =
           FieldValue.serverTimestamp()
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId:
+              legacyUserRef.id,
 
+            accessRole:
+              legacyUser.accessRole ||
+              'player',
+
+            accountStatus:
+              'active',
+
+            updatedAt: now,
+          },
+          {
+            merge: true,
+          }
+        )
         transaction.update(legacyUserRef, {
           authUid:
             linkRequest.requestedByUid,
@@ -1162,7 +1454,6 @@ exports.approveJoinRequest = onCall(
 
     const result = await db.runTransaction(
       async (transaction) => {
-        // 1. Prima leggiamo la richiesta
         const joinRequestSnapshot =
           await transaction.get(joinRequestRef)
 
@@ -1193,8 +1484,6 @@ exports.approveJoinRequest = onCall(
           )
         }
 
-        // 2. Cerchiamo il profilo del reviewer
-        // SOLTANTO nel team della richiesta
         const reviewer =
           await getAuthenticatedTeamProfile(
             transaction,
@@ -1213,7 +1502,6 @@ exports.approveJoinRequest = onCall(
           )
         }
 
-        // 3. Cerchiamo un'eventuale vecchia membership
         const existingMembershipQuery = db
           .collection('users')
           .where(
@@ -1261,10 +1549,6 @@ exports.approveJoinRequest = onCall(
             )
           }
 
-          /*
-          * Non esiste nessuna membership attiva:
-          * recuperiamo una di quelle rimosse.
-          */
           const removedMembership =
             memberships.find(
               (membership) =>
@@ -1277,13 +1561,18 @@ exports.approveJoinRequest = onCall(
 
             reactivatedMembership = true
           }
-        } 
+        }
 
         if (!membershipRef) {
           membershipRef =
             db.collection('users').doc()
         }
 
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(joinRequest.teamId)
+          .collection('members')
+          .doc(joinRequest.requestedByUid)
 
         const displayName =
           joinRequest.requestedByName ||
@@ -1304,12 +1593,6 @@ exports.approveJoinRequest = onCall(
             membershipRef,
             {
               accountStatus: 'active',
-
-              /*
-              * Rientra sempre come Player.
-              * Non recuperiamo automaticamente
-              * eventuali privilegi da Maintainer.
-              */
               accessRole: 'player',
 
               email:
@@ -1323,29 +1606,13 @@ exports.approveJoinRequest = onCall(
               removedAt: null,
               removedById: null,
               removedByName: null,
-
               leftAt: null,
 
               rejoinedAt: now,
-
               updatedAt: now,
             }
           )
         } else {
-          const displayName =
-            joinRequest.requestedByName ||
-            joinRequest.requestedByEmail ||
-            'Giocatore'
-
-          const nameParts =
-            displayName.trim().split(/\s+/)
-
-          const firstName =
-            nameParts[0] || displayName
-
-          const lastName =
-            nameParts.slice(1).join(' ')
-
           transaction.set(
             membershipRef,
             {
@@ -1385,15 +1652,38 @@ exports.approveJoinRequest = onCall(
           )
         }
 
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId:
+              membershipRef.id,
+
+            accessRole:
+              'player',
+
+            accountStatus:
+              'active',
+
+            updatedAt:
+              now,
+          },
+          {
+            merge: true,
+          }
+        )
+
         transaction.update(
           joinRequestRef,
           {
             status: 'approved',
             reactivatedMembership,
+
             membershipId:
               membershipRef.id,
 
-            reviewedAt: now,
+            reviewedAt:
+              now,
+
             reviewedByUid:
               request.auth.uid,
 
@@ -1403,13 +1693,15 @@ exports.approveJoinRequest = onCall(
             reviewedByName:
               reviewer.username || null,
 
-            updatedAt: now,
+            updatedAt:
+              now,
           }
         )
 
         return {
           membershipId:
             membershipRef.id,
+
           reactivatedMembership,
         }
       }
@@ -1712,11 +2004,20 @@ exports.deleteTeam = onCall(
     await writer.close()
 
     /*
-     * Il team viene eliminato per ultimo:
-     * finché la pulizia non è terminata,
-     * il documento principale continua
-     * ad esistere.
-     */
+    * Eliminiamo l'indice autorizzazioni del team
+    * insieme a tutta la sottocollection members.
+    */
+    const teamMembersRef = db
+      .collection('teamMembers')
+      .doc(teamId)
+
+    await db.recursiveDelete(
+      teamMembersRef
+    )
+
+    /*
+    * Il team principale viene eliminato per ultimo.
+    */
     await teamRef.delete()
 
     console.log(
@@ -1766,7 +2067,11 @@ exports.leaveTeam = onCall(
             request.auth.uid,
             teamId
           )
-
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(request.auth.uid)
         if (
           membership.accessRole === 'owner'
         ) {
@@ -1796,6 +2101,9 @@ exports.leaveTeam = onCall(
 
             updatedAt: now,
           }
+        )
+        transaction.delete(
+          teamMemberRef
         )
       }
     )
@@ -1904,6 +2212,18 @@ exports.transferTeamOwnership = onCall(
         const target =
           targetSnapshot.data()
 
+        const currentOwnerMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(request.auth.uid)
+
+        const targetMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(target.authUid)
+
         if (
           target.teamId !== teamId
         ) {
@@ -1943,11 +2263,24 @@ exports.transferTeamOwnership = onCall(
           }
         )
 
-        /*
-         * Il nuovo membro diventa owner.
-         */
         transaction.update(
           targetRef,
+          {
+            accessRole: 'owner',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          currentOwnerMemberRef,
+          {
+            accessRole: 'maintainer',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          targetMemberRef,
           {
             accessRole: 'owner',
             updatedAt: now,
@@ -1968,6 +2301,216 @@ exports.transferTeamOwnership = onCall(
 
     return {
       success: true,
+    }
+  }
+)
+
+exports.backfillTeamMembers = onCall(
+  {
+    region: 'europe-west8',
+    timeoutSeconds: 300,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    /*
+     * IMPORTANTE:
+     * funzione temporanea DEV.
+     * Richiediamo una conferma esplicita.
+     */
+    if (
+      request.data?.confirmation !==
+      'BACKFILL_TEAM_MEMBERS'
+    ) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Conferma non valida.'
+      )
+    }
+
+    const dryRun =
+      request.data?.dryRun !== false
+
+    const db = getFirestore()
+
+    const usersSnapshot = await db
+      .collection('users')
+      .get()
+
+    const memberships = []
+
+    const seen = new Map()
+
+    for (const document of usersSnapshot.docs) {
+      const data = document.data()
+
+      if (
+        data.accountStatus !== 'active'
+      ) {
+        continue
+      }
+
+      if (
+        !data.teamId ||
+        !data.authUid
+      ) {
+        console.log(
+          `SKIP ${document.id}: teamId/authUid mancante`
+        )
+
+        continue
+      }
+
+      const key =
+        `${data.teamId}:${data.authUid}`
+
+      if (seen.has(key)) {
+        throw new HttpsError(
+          'failed-precondition',
+          `Membership attiva duplicata: ${key}. ` +
+          `Documenti ${seen.get(key)} e ${document.id}`
+        )
+      }
+
+      seen.set(
+        key,
+        document.id
+      )
+
+      memberships.push({
+        membershipId:
+          document.id,
+
+        teamId:
+          data.teamId,
+
+        authUid:
+          data.authUid,
+
+        accessRole:
+          data.accessRole ||
+          'player',
+      })
+    }
+
+    console.log(
+      `Backfill: ${memberships.length} membership attive valide.`
+    )
+
+    if (dryRun) {
+      memberships.forEach(
+        (membership) => {
+          console.log(
+            '[DRY RUN]',
+            membership
+          )
+        }
+      )
+
+      return {
+        success: true,
+        dryRun: true,
+        memberships:
+          memberships.length,
+
+        teams:
+          new Set(
+            memberships.map(
+              (item) => item.teamId
+            )
+          ).size,
+      }
+    }
+
+    /*
+     * Scriviamo in batch.
+     * 2 operazioni circa per membership,
+     * quindi teniamoci sotto il limite.
+     */
+    const chunks = []
+
+    for (
+      let index = 0;
+      index < memberships.length;
+      index += 200
+    ) {
+      chunks.push(
+        memberships.slice(
+          index,
+          index + 200
+        )
+      )
+    }
+
+    let writes = 0
+
+    for (const chunk of chunks) {
+      const batch = db.batch()
+
+      for (const membership of chunk) {
+        const rootRef = db
+          .collection('teamMembers')
+          .doc(membership.teamId)
+
+        const memberRef = rootRef
+          .collection('members')
+          .doc(membership.authUid)
+
+        batch.set(
+          rootRef,
+          {
+            teamId:
+              membership.teamId,
+
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        )
+
+        batch.set(
+          memberRef,
+          {
+            membershipId:
+              membership.membershipId,
+
+            accessRole:
+              membership.accessRole,
+
+            accountStatus:
+              'active',
+
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        )
+
+        writes += 2
+      }
+
+      await batch.commit()
+    }
+
+    console.log(
+      `Backfill completato: ${writes} scritture.`
+    )
+
+    return {
+      success: true,
+      dryRun: false,
+      memberships:
+        memberships.length,
+      writes,
     }
   }
 )

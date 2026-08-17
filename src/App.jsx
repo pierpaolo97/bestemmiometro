@@ -178,27 +178,27 @@ function JoinTeamModal({
       className="modal-backdrop"
       onClick={onClose}
     >
-      <div
-        className="modal join-team-modal"
-        onClick={(event) =>
-          event.stopPropagation()
-        }
+    <div
+      className="modal join-team-modal"
+      onClick={(event) =>
+        event.stopPropagation()
+      }
+    >
+      <button
+        type="button"
+        className="modal-close"
+        onClick={onClose}
       >
-        <button
-          type="button"
-          className="modal-close"
-          onClick={onClose}
-        >
-          <X />
-        </button>
+        <X />
+      </button>
 
-        <h2>Entra in un gruppo</h2>
+      <h2>Entra in un gruppo</h2>
 
-        <p>
-          Inserisci il codice invito
-          del gruppo.
-        </p>
+      <p>
+        Inserisci il codice invito del gruppo.
+      </p>
 
+      <div className="join-team-search-row">
         <input
           type="text"
           value={code}
@@ -222,27 +222,30 @@ function JoinTeamModal({
             ? 'Ricerca...'
             : 'Cerca gruppo'}
         </button>
+      </div>
 
-        {preview && (
-          <div className="join-team-preview">
-            <p>Gruppo trovato</p>
+      {preview && (
+        <div className="join-team-preview">
+          <div className="join-team-preview-info">
+            <span>Gruppo trovato</span>
 
             <strong>
               {preview.name}
             </strong>
-
-            <button
-              type="button"
-              onClick={onRequestJoin}
-              disabled={requesting}
-            >
-              {requesting
-                ? 'Invio richiesta...'
-                : 'Richiedi accesso'}
-            </button>
           </div>
-        )}
-      </div>
+
+          <button
+            type="button"
+            onClick={onRequestJoin}
+            disabled={requesting}
+          >
+            {requesting
+              ? 'Invio...'
+              : 'Richiedi accesso'}
+          </button>
+        </div>
+      )}
+    </div>
     </div>
   )
 }
@@ -491,6 +494,24 @@ export default function App() {
     notificationsEnabled,
     setNotificationsEnabled
   ] = useState(false)
+
+  const removeTeamMemberCallable = useMemo(
+    () =>
+      httpsCallable(
+        functions,
+        'removeTeamMember'
+      ),
+    []
+  )
+
+  const setMemberRoleCallable = useMemo(
+    () =>
+      httpsCallable(
+        functions,
+        'setMemberRole'
+      ),
+    []
+  )
 
   function getNotificationDeviceId() {
     const storageKey =
@@ -1315,13 +1336,11 @@ export default function App() {
     if (!confirmed) return
 
     try {
-      await updateDoc(
-        doc(db, 'users', member.id),
-        {
-          accessRole: newRole,
-          updatedAt: serverTimestamp(),
-        }
-      )
+      await setMemberRoleCallable({
+        teamId: activeTeam.id,
+        membershipId: member.id,
+        accessRole: newRole,
+      })
 
       showToast(
         newRole === 'maintainer'
@@ -2054,24 +2073,10 @@ export default function App() {
     if (!confirmed) return
 
     try {
-      await updateDoc(
-        doc(db, 'users', member.id),
-        {
-          accountStatus: 'removed',
-
-          removedAt:
-            serverTimestamp(),
-
-          removedById:
-            currentUser.id,
-
-          removedByName:
-            currentUser.username,
-
-          updatedAt:
-            serverTimestamp(),
-        }
-      )
+      await removeTeamMemberCallable({
+        teamId: activeTeam.id,
+        membershipId: member.id,
+      })
 
       showToast(
         `${member.username} rimosso dal gruppo.`,
@@ -2366,6 +2371,14 @@ export default function App() {
         collection(db, 'users')
       )
 
+      const teamMemberRef = doc(
+        db,
+        'teamMembers',
+        teamRef.id,
+        'members',
+        firebaseUser.uid
+      )
+
       const inviteCode =
         generateTeamCode()
 
@@ -2396,7 +2409,6 @@ export default function App() {
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           })
-
           transaction.set(membershipRef, {
             authUid: firebaseUser.uid,
 
@@ -2421,12 +2433,33 @@ export default function App() {
             accessRole: 'owner',
             accountStatus: 'active',
 
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt:
+              serverTimestamp(),
+
+            updatedAt:
+              serverTimestamp(),
           })
+          transaction.set(
+            teamMemberRef,
+            {
+              membershipId:
+                membershipRef.id,
+
+              accessRole:
+                'owner',
+
+              accountStatus:
+                'active',
+
+              createdAt:
+                serverTimestamp(),
+
+              updatedAt:
+                serverTimestamp(),
+            }
+          )        
         }
       )
-
       localStorage.setItem(
         'bestemmiometro_active_membership',
         membershipRef.id
@@ -2458,9 +2491,7 @@ export default function App() {
     }
   }  
 
-  async function searchTeamByInviteCode(event) {
-    event.preventDefault()
-
+  async function searchTeamByInviteCode() {
     await loadTeamByInviteCode(
       joinTeamCode
     )
@@ -3850,15 +3881,16 @@ export default function App() {
         <JoinTeamModal
           open={showJoinTeam}
           onClose={closeJoinFlow}
-          joinTeamCode={joinTeamCode}
-          setJoinTeamCode={setJoinTeamCode}
-          joinTeamPreview={joinTeamPreview}
-          isSearchingJoinTeam={
-            isSearchingJoinTeam
-          }
-          isRequestingJoin={
-            isRequestingJoin
-          }
+
+          code={joinTeamCode}
+          setCode={setJoinTeamCode}
+
+          preview={joinTeamPreview}
+
+          searching={isSearchingJoinTeam}
+
+          requesting={isRequestingJoin}
+
           onSearch={searchTeamByInviteCode}
           onRequestJoin={requestJoinTeam}
         />
@@ -4056,15 +4088,16 @@ export default function App() {
         <JoinTeamModal
           open={showJoinTeam}
           onClose={closeJoinFlow}
-          joinTeamCode={joinTeamCode}
-          setJoinTeamCode={setJoinTeamCode}
-          joinTeamPreview={joinTeamPreview}
-          isSearchingJoinTeam={
-            isSearchingJoinTeam
-          }
-          isRequestingJoin={
-            isRequestingJoin
-          }
+
+          code={joinTeamCode}
+          setCode={setJoinTeamCode}
+
+          preview={joinTeamPreview}
+
+          searching={isSearchingJoinTeam}
+
+          requesting={isRequestingJoin}
+
           onSearch={searchTeamByInviteCode}
           onRequestJoin={requestJoinTeam}
         />
@@ -5711,15 +5744,16 @@ export default function App() {
       <JoinTeamModal
         open={showJoinTeam}
         onClose={closeJoinFlow}
-        joinTeamCode={joinTeamCode}
-        setJoinTeamCode={setJoinTeamCode}
-        joinTeamPreview={joinTeamPreview}
-        isSearchingJoinTeam={
-          isSearchingJoinTeam
-        }
-        isRequestingJoin={
-          isRequestingJoin
-        }
+
+        code={joinTeamCode}
+        setCode={setJoinTeamCode}
+
+        preview={joinTeamPreview}
+
+        searching={isSearchingJoinTeam}
+
+        requesting={isRequestingJoin}
+
         onSearch={searchTeamByInviteCode}
         onRequestJoin={requestJoinTeam}
       />

@@ -4302,3 +4302,72 @@ textarea {
 
   flex: 0 0 auto;
 }
+
+.join-team-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.join-team-modal h2,
+.join-team-modal p {
+  margin: 0;
+}
+
+.join-team-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.join-team-search-row input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.join-team-search-row button {
+  white-space: nowrap;
+}
+
+.join-team-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+
+  padding: 14px 16px;
+
+  border: 1px solid rgba(180, 140, 60, 0.25);
+  border-radius: 18px;
+
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.join-team-preview-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  min-width: 0;
+}
+
+.join-team-preview-info span {
+  font-size: 0.78rem;
+  color: #7c746a;
+}
+
+.join-team-preview-info strong {
+  font-size: 1rem;
+  color: #172033;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.join-team-preview button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
