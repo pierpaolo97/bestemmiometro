@@ -3859,7 +3859,7 @@ export default function App() {
           isRequestingJoin={
             isRequestingJoin
           }
-          onSearch={searchJoinTeam}
+          onSearch={searchTeamByInviteCode}
           onRequestJoin={requestJoinTeam}
         />
       </main>
@@ -4065,7 +4065,7 @@ export default function App() {
           isRequestingJoin={
             isRequestingJoin
           }
-          onSearch={searchJoinTeam}
+          onSearch={searchTeamByInviteCode}
           onRequestJoin={requestJoinTeam}
         />
 
@@ -5720,7 +5720,7 @@ export default function App() {
         isRequestingJoin={
           isRequestingJoin
         }
-        onSearch={searchJoinTeam}
+        onSearch={searchTeamByInviteCode}
         onRequestJoin={requestJoinTeam}
       />
 
