@@ -1172,6 +1172,23 @@ exports.approveAccountLink = onCall(
           .collection('members')
           .doc(linkRequest.requestedByUid)
 
+          const teamRef = db
+            .collection('teams')
+            .doc(legacyUser.teamId)
+
+          const teamSnapshot =
+            await transaction.get(teamRef)
+
+          if (!teamSnapshot.exists) {
+            throw new HttpsError(
+              'not-found',
+              'Gruppo non trovato.'
+            )
+          }
+
+          const team =
+            teamSnapshot.data()
+
         if (
           legacyUser.teamKey !==
           linkRequest.teamKey
@@ -1254,6 +1271,11 @@ exports.approveAccountLink = onCall(
           authUid:
             linkRequest.requestedByUid,
 
+          teamName:
+            team.name ||
+            legacyUser.teamName ||
+            null,
+            
           email:
             linkRequest.requestedByEmail ||
             null,
@@ -2301,6 +2323,243 @@ exports.transferTeamOwnership = onCall(
 
     return {
       success: true,
+    }
+  }
+)
+
+exports.claimLegacyOwner = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    const legacyUserId =
+      typeof request.data?.legacyUserId === 'string'
+        ? request.data.legacyUserId.trim()
+        : ''
+
+    if (!legacyUserId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'legacyUserId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const legacyUserRef = db
+      .collection('users')
+      .doc(legacyUserId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        /*
+         * Prima tutte le letture.
+         */
+        const legacySnapshot =
+          await transaction.get(legacyUserRef)
+
+        if (!legacySnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Profilo legacy non trovato.'
+          )
+        }
+
+        const legacyUser =
+          legacySnapshot.data()
+
+        if (!legacyUser.teamId) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Profilo legacy non migrato.'
+          )
+        }
+
+        if (legacyUser.accessRole !== 'owner') {
+          throw new HttpsError(
+            'permission-denied',
+            'Questo profilo non è l’owner del gruppo.'
+          )
+        }
+
+        if (
+          legacyUser.authUid &&
+          legacyUser.authUid !== request.auth.uid
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Il profilo è già collegato a un altro account.'
+          )
+        }
+
+        const teamRef = db
+          .collection('teams')
+          .doc(legacyUser.teamId)
+
+        const teamSnapshot =
+          await transaction.get(teamRef)
+
+        if (!teamSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Gruppo non trovato.'
+          )
+        }
+
+        const team = teamSnapshot.data()
+
+        /*
+         * Il bootstrap è consentito SOLO
+         * finché il team non ha un owner Firebase.
+         */
+        if (team.ownerUid) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il gruppo ha già un owner collegato.'
+          )
+        }
+
+        /*
+         * Impedisce due membership nello stesso team
+         * per lo stesso account.
+         */
+        const existingQuery = db
+          .collection('users')
+          .where(
+            'authUid',
+            '==',
+            request.auth.uid
+          )
+          .where(
+            'teamId',
+            '==',
+            legacyUser.teamId
+          )
+          .limit(1)
+
+        const existingSnapshot =
+          await transaction.get(
+            existingQuery
+          )
+
+        if (
+          !existingSnapshot.empty &&
+          existingSnapshot.docs[0].id !==
+            legacyUserId
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Questo account è già collegato a un altro profilo del gruppo.'
+          )
+        }
+
+        const teamMembersRootRef = db
+          .collection('teamMembers')
+          .doc(legacyUser.teamId)
+
+        const teamMemberRef =
+          teamMembersRootRef
+            .collection('members')
+            .doc(request.auth.uid)
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        /*
+         * Ora le scritture.
+         */
+        transaction.update(
+          legacyUserRef,
+          {
+            teamName:
+              team.name || legacyUser.teamName || null,
+
+            authUid:
+              request.auth.uid,
+
+            email:
+              request.auth.token.email ||
+              null,
+
+            accountStatus:
+              'active',
+
+            accessRole:
+              'owner',
+
+            accountLinkedAt:
+              now,
+
+            updatedAt:
+              now,
+          }
+        )
+
+        transaction.update(
+          teamRef,
+          {
+            ownerUid:
+              request.auth.uid,
+
+            updatedAt:
+              now,
+          }
+        )
+
+        transaction.set(
+          teamMembersRootRef,
+          {
+            teamId:
+              legacyUser.teamId,
+
+            updatedAt:
+              now,
+          },
+          {
+            merge: true,
+          }
+        )
+
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId:
+              legacyUserId,
+
+            accessRole:
+              'owner',
+
+            accountStatus:
+              'active',
+
+            updatedAt:
+              now,
+          },
+          {
+            merge: true,
+          }
+        )
+
+        return {
+          membershipId:
+            legacyUserId,
+
+          teamId:
+            legacyUser.teamId,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
     }
   }
 )

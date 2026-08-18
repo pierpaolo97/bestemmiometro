@@ -369,6 +369,12 @@ export default function App() {
     []
   )
 
+  const claimLegacyOwnerCallable =
+    httpsCallable(
+      functions,
+      'claimLegacyOwner'
+    )
+
   const rejectAccountLinkCallable = useMemo(
     () =>
       httpsCallable(
@@ -2675,6 +2681,43 @@ export default function App() {
       )
 
       return
+    }
+
+    if (selectedUser.accessRole === 'owner') {
+      try {
+        const result =
+          await claimLegacyOwnerCallable({
+            legacyUserId:
+              selectedUser.id,
+          })
+
+        localStorage.setItem(
+          'bestemmiometro_active_membership',
+          result.data.membershipId
+        )
+
+        showToast(
+          'Profilo owner recuperato.',
+          'success'
+        )
+
+        setShowLegacyRecovery(false)
+
+        return
+      } catch (error) {
+        console.error(
+          'Errore recupero owner legacy:',
+          error
+        )
+
+        showToast(
+          error.message ||
+          'Impossibile recuperare il profilo owner.',
+          'danger'
+        )
+
+        return
+      }
     }
 
     setIsRequestingLink(true)

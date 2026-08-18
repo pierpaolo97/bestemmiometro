@@ -145,19 +145,40 @@ service cloud.firestore {
        * Per il caso 3 il frontend DEVE usare:
        * where('authUid', '==', null)
        */
-      allow read: if signedIn()
-        && (
-          resource.data.authUid == request.auth.uid
-
-          || (
-            resource.data.teamId != null
-            && isTeamMember(
-              resource.data.teamId
+        allow read: if signedIn()
+          && (
+            /*
+            * Mia membership collegata.
+            */
+            (
+              'authUid' in resource.data
+              && resource.data.authUid
+                  == request.auth.uid
             )
-          )
 
-          || resource.data.authUid == null
-        );
+            ||
+
+            /*
+            * Membership di un team di cui faccio parte.
+            */
+            (
+              'teamId' in resource.data
+              && resource.data.teamId != null
+              && isTeamMember(
+                  resource.data.teamId
+                )
+            )
+
+            ||
+
+            /*
+            * Profilo legacy ancora non collegato.
+            */
+            (
+              !('authUid' in resource.data)
+              || resource.data.authUid == null
+            )
+          );
 
       /*
        * Creazione diretta consentita solo durante
