@@ -616,7 +616,7 @@ export default function App() {
 
   useEffect(() => {
     if (
-      !currentUser?.teamKey ||
+      !currentUser?.teamId ||
       !isMaintainer
     ) {
       setPendingAccountLinkRequests([])
@@ -667,7 +667,7 @@ export default function App() {
     )
 
     return unsubscribe
-  }, [currentUser, isMaintainer])
+  }, [currentUser?.teamId, isMaintainer])
 
   useEffect(() => {
     if (!currentUser) {
