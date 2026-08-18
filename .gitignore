@@ -32,3 +32,4 @@ functions/.env
 functions/.env.*
 # Local Firestore backups
 backups/
+functions/scripts/*
