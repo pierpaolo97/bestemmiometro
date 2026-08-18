@@ -24,5 +24,15 @@ dist-ssr
 *.sw?
 node_modules
 dist
+<<<<<<< HEAD
 .env*
 backups/*
+=======
+.env
+# Firebase service-account credentials
+*service-account*.json
+firebase-keys/
+
+# Local Firestore backups
+backups/
+>>>>>>> develop/native-app

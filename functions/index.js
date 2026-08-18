@@ -3,154 +3,696 @@ const {
   onDocumentUpdated,
 } = require('firebase-functions/v2/firestore')
 const { initializeApp } = require('firebase-admin/app')
-const { getFirestore } = require('firebase-admin/firestore')
+const {
+  getFirestore,
+  FieldValue,
+} = require('firebase-admin/firestore')
 const { getMessaging } = require('firebase-admin/messaging')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
+const { 
+  onCall, 
+  HttpsError, 
+} = require('firebase-functions/v2/https')
 
 initializeApp()
 
-exports.notifyNewEvent = onDocumentCreated(
-  'events/{eventId}',
-  async (event) => {
-    try {
-      const data = event.data.data()
+function getAppBaseUrl() {
+  const url = process.env.APP_BASE_URL
 
-      if (!data?.teamKey) {
-        console.log('Evento senza teamKey')
-        return
-      }
+  if (!url) {
+    throw new Error(
+      'APP_BASE_URL non configurato.'
+    )
+  }
 
-      console.log('Nuovo evento ricevuto')
-      console.log('Tipo:', data.type)
-      console.log('Target:', data.targetName)
+  return url.replace(/\/+$/, '')
+}
 
-      const db = getFirestore()
+async function getTeamNotificationRecipients(
+  db,
+  teamId,
+  excludedAuthUids = []
+) {
+  /*
+   * 1. Trova tutte le membership attive del team.
+   */
+  const membersSnapshot = await db
+    .collection('users')
+    .where(
+      'teamId',
+      '==',
+      teamId
+    )
+    .where(
+      'accountStatus',
+      '==',
+      'active'
+    )
+    .get()
 
-      const usersSnapshot = await db
-        .collection('users')
-        .where('teamKey', '==', data.teamKey)
-        .where('notificationsEnabled', '==', true)
-        .get()
-
-      let tokens = usersSnapshot.docs
-        .filter((doc) => doc.id !== data.createdById)
-        .map((doc) => doc.data().notificationToken)
+  const authUids = [
+    ...new Set(
+      membersSnapshot.docs
+        .map(
+          (document) =>
+            document.data().authUid
+        )
         .filter(Boolean)
+        .filter(
+          (authUid) =>
+            !excludedAuthUids.includes(
+              authUid
+            )
+        )
+    ),
+  ]
 
-      if (tokens.length > 50) {
-        tokens = tokens.slice(0, 50)
-      }
+  if (!authUids.length) {
+    return []
+  }
 
-      console.log('Token trovati:', tokens.length)
+  /*
+   * Firestore limita le query IN,
+   * quindi lavoriamo a blocchi.
+   */
+  const chunks = []
 
-      if (!tokens.length) {
-        console.log('Nessun token disponibile')
-        return
-      }
+  for (
+    let index = 0;
+    index < authUids.length;
+    index += 30
+  ) {
+    chunks.push(
+      authUids.slice(
+        index,
+        index + 30
+      )
+    )
+  }
 
-      const notificationConfig = {
-        bestemmia: {
-          title: '🔥 Nuova bestemmia',
-          body: `Assegnata a ${data.targetName}`,
-        },
+  const recipients = []
 
-        benedizione: {
-          title: '🙏 Nuova benedizione',
-          body: `Assegnata a ${data.targetName}`,
-        },
+  for (const chunk of chunks) {
+    const devicesSnapshot = await db
+      .collection(
+        'notificationDevices'
+      )
+      .where(
+        'authUid',
+        'in',
+        chunk
+      )
+      .where(
+        'enabled',
+        '==',
+        true
+      )
+      .get()
 
-        superbestemmia: {
-          title: '💀 Superbestemmia',
-          body: `Assegnata a ${data.targetName}`,
-        },
-      }
+    devicesSnapshot.docs.forEach(
+      (document) => {
+        const data = document.data()
 
-      const notification =
-        notificationConfig[data.type] || {
-          title: 'Bestemmiometro',
-          body: 'Nuovo evento registrato',
+        if (!data.token) {
+          return
         }
 
-      const result = await getMessaging().sendEachForMulticast({
-        tokens,
+        recipients.push({
+          id: document.id,
+          ref: document.ref,
+          authUid: data.authUid,
+          token: data.token,
+          platform:
+            data.platform || 'web',
+        })
+      }
+    )
+  }
 
-        notification: {
-          title: notification.title,
-          body: notification.body,
-        },
+  return recipients
+}
 
-        data: {
-          type: 'event-created',
-          eventType: data.type || '',
-          targetId: data.targetId || '',
-          targetName: data.targetName || '',
-          eventId: event.params.eventId || '',
-        },
+async function getAuthenticatedTeamProfile(
+  transaction,
+  db,
+  authUid,
+  teamId
+) {
+  const profileQuery = db
+    .collection('users')
+    .where('authUid', '==', authUid)
+    .where('teamId', '==', teamId)
+    .where('accountStatus', '==', 'active')
+    .limit(1)
 
-        webpush: {
-          fcmOptions: {
-            link: 'https://pierpaolo97.github.io/bestemmiometro/',
-          },
+  const profileSnapshot =
+    await transaction.get(profileQuery)
 
-          notification: {
-            tag: `bestemmiometro-${event.params.eventId}`,
-            icon:
-              'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+  if (profileSnapshot.empty) {
+    throw new HttpsError(
+      'permission-denied',
+      'Non fai parte di questo gruppo.'
+    )
+  }
 
-            badge:
-              'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
-          },
-        },
-      })
+  const profileDocument =
+    profileSnapshot.docs[0]
 
-      console.log(
-        `Notifiche inviate. Success: ${result.successCount}`
+  return {
+    id: profileDocument.id,
+    ref: profileDocument.ref,
+    ...profileDocument.data(),
+  }
+}
+
+async function cleanupInvalidNotificationDevices(
+  response,
+  recipients
+) {
+  const invalidRefs = []
+
+  response.responses.forEach(
+    (result, index) => {
+      if (result.success) {
+        return
+      }
+
+      const errorCode =
+        result.error?.code
+
+      console.error(
+        'Errore notifica:',
+        errorCode,
+        result.error?.message
       )
 
-      console.log(
-        `Notifiche fallite: ${result.failureCount}`
+      if (
+        errorCode ===
+          'messaging/registration-token-not-registered' ||
+        errorCode ===
+          'messaging/invalid-registration-token'
+      ) {
+        const recipient =
+          recipients[index]
+
+        if (recipient?.ref) {
+          invalidRefs.push(
+            recipient.ref
+          )
+        }
+      }
+    }
+  )
+
+  if (!invalidRefs.length) {
+    return
+  }
+
+  const db = getFirestore()
+  const batch = db.batch()
+
+  invalidRefs.forEach((ref) => {
+    batch.delete(ref)
+  })
+
+  await batch.commit()
+
+  console.log(
+    `${invalidRefs.length} dispositivi FCM non validi rimossi.`
+  )
+}
+
+ exports.setMemberRole = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
       )
-    } catch (error) {
-      console.error('Errore notifyNewEvent:', error)
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const membershipId =
+      typeof request.data?.membershipId === 'string'
+        ? request.data.membershipId.trim()
+        : ''
+
+    const newRole =
+      typeof request.data?.accessRole === 'string'
+        ? request.data.accessRole.trim()
+        : ''
+
+    if (
+      !teamId ||
+      !membershipId ||
+      !['player', 'maintainer'].includes(newRole)
+    ) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Dati non validi.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const membershipRef =
+      db.collection('users').doc(membershipId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        if (reviewer.accessRole !== 'owner') {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo l’owner può modificare i ruoli.'
+          )
+        }
+
+        const membershipSnapshot =
+          await transaction.get(membershipRef)
+
+        if (!membershipSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Membro non trovato.'
+          )
+        }
+
+        const membership =
+          membershipSnapshot.data()
+
+        if (
+          membership.teamId !== teamId ||
+          membership.accountStatus !== 'active'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Membership non valida.'
+          )
+        }
+
+        if (
+          membership.accessRole === 'owner' ||
+          !membership.authUid
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il ruolo di questo membro non può essere modificato.'
+          )
+        }
+
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(membership.authUid)
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          membershipRef,
+          {
+            accessRole: newRole,
+            updatedAt: now,
+          }
+        )
+
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId,
+            accessRole: newRole,
+            accountStatus: 'active',
+            updatedAt: now,
+          },
+          {
+            merge: true,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
     }
   }
 )
 
+
+exports.removeTeamMember = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const membershipId =
+      typeof request.data?.membershipId === 'string'
+        ? request.data.membershipId.trim()
+        : ''
+
+    if (!teamId || !membershipId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Dati mancanti.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const membershipRef =
+      db.collection('users').doc(membershipId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        const membershipSnapshot =
+          await transaction.get(membershipRef)
+
+        if (!membershipSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Membro non trovato.'
+          )
+        }
+
+        const membership =
+          membershipSnapshot.data()
+
+        if (
+          membership.teamId !== teamId ||
+          membership.accountStatus !== 'active'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Membership non valida.'
+          )
+        }
+
+        if (
+          membership.authUid === request.auth.uid
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Non puoi rimuovere te stesso.'
+          )
+        }
+
+        if (membership.accessRole === 'owner') {
+          throw new HttpsError(
+            'failed-precondition',
+            'L’owner non può essere rimosso.'
+          )
+        }
+
+        const reviewerCanRemove =
+          reviewer.accessRole === 'owner' ||
+          (
+            reviewer.accessRole === 'maintainer' &&
+            membership.accessRole === 'player'
+          )
+
+        if (!reviewerCanRemove) {
+          throw new HttpsError(
+            'permission-denied',
+            'Non puoi rimuovere questo membro.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          membershipRef,
+          {
+            accountStatus: 'removed',
+            removedAt: now,
+            removedById: reviewer.id,
+            removedByName:
+              reviewer.username || null,
+            updatedAt: now,
+          }
+        )
+
+        if (membership.authUid) {
+          const teamMemberRef = db
+            .collection('teamMembers')
+            .doc(teamId)
+            .collection('members')
+            .doc(membership.authUid)
+
+          transaction.delete(teamMemberRef)
+        }
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+exports.notifyNewEvent =
+  onDocumentCreated(
+    {
+      document: 'events/{eventId}',
+      region: 'europe-west8',
+    },
+    async (event) => {
+      try {
+        const data =
+          event.data?.data()
+
+        if (!data?.teamId) {
+          console.log(
+            'Evento senza teamId.'
+          )
+          return
+        }
+
+        const db =
+          getFirestore()
+
+        /*
+         * Troviamo eventualmente
+         * l'authUid di chi ha creato
+         * l'evento.
+         */
+        let excludedAuthUids = []
+
+        if (data.createdById) {
+          const creatorSnapshot =
+            await db
+              .collection('users')
+              .doc(data.createdById)
+              .get()
+
+          if (
+            creatorSnapshot.exists &&
+            creatorSnapshot.data()
+              ?.authUid
+          ) {
+            excludedAuthUids = [
+              creatorSnapshot.data()
+                .authUid,
+            ]
+          }
+        }
+
+        const recipients =
+          await getTeamNotificationRecipients(
+            db,
+            data.teamId,
+            excludedAuthUids
+          )
+
+        if (!recipients.length) {
+          console.log(
+            'Nessun dispositivo da notificare.'
+          )
+          return
+        }
+
+        const tokens = [
+          ...new Set(
+            recipients.map(
+              (recipient) =>
+                recipient.token
+            )
+          ),
+        ].slice(0, 500)
+
+        const notificationConfig = {
+          bestemmia: {
+            title:
+              '🔥 Nuova bestemmia',
+
+            body:
+              `Assegnata a ${data.targetName}`,
+          },
+
+          benedizione: {
+            title:
+              '🙏 Nuova benedizione',
+
+            body:
+              `Assegnata a ${data.targetName}`,
+          },
+
+          superbestemmia: {
+            title:
+              '💀 Nuova superbestemmia',
+
+            body:
+              `Assegnata a ${data.targetName}`,
+          },
+        }
+
+        const notification =
+          notificationConfig[
+            data.type
+          ] || {
+            title:
+              'Bestemmiometro',
+
+            body:
+              'Nuovo evento registrato',
+          }
+
+        const response =
+          await getMessaging()
+            .sendEachForMulticast({
+              tokens,
+
+              notification: {
+                title:
+                  notification.title,
+
+                body:
+                  notification.body,
+              },
+
+              data: {
+                type:
+                  'event-created',
+
+                eventType:
+                  data.type || '',
+
+                teamId:
+                  data.teamId || '',
+
+                teamKey:
+                  data.teamKey || '',
+
+                targetId:
+                  data.targetId || '',
+
+                targetName:
+                  data.targetName || '',
+
+                eventId:
+                  event.params.eventId,
+              },
+
+              webpush: {
+                fcmOptions: {
+                  link:
+                    `${getAppBaseUrl()}/`
+                },
+
+                notification: {
+                  tag:
+                    `bestemmiometro-${event.params.eventId}`,
+
+                  icon:
+                    `${getAppBaseUrl()}/icons/icon-192.png`,
+
+                  badge:
+                    `${getAppBaseUrl()}/icons/icon-192.png`,
+                },
+              },
+            })
+
+        console.log(
+          `Evento: ${response.successCount} notifiche inviate, ${response.failureCount} fallite.`
+        )
+
+        await cleanupInvalidNotificationDevices(
+          response,
+          recipients
+        )
+      } catch (error) {
+        console.error(
+          'Errore notifyNewEvent:',
+          error
+        )
+      }
+    }
+  )
+
 async function notifyVarResult(varCase, result) {
   const db = getFirestore()
 
-  if (!varCase?.teamKey) {
+  if (!varCase?.teamId) {
     console.log(
       'Impossibile notificare il risultato VAR: teamKey mancante.'
     )
     return
   }
 
-  const usersSnapshot = await db
-    .collection('users')
-    .where('teamKey', '==', varCase.teamKey)
-    .where('notificationsEnabled', '==', true)
-    .get()
-
-  const recipients = usersSnapshot.docs
-    .map((document) => ({
-      id: document.id,
-      notificationToken: document.data().notificationToken,
-    }))
-    .filter((user) => Boolean(user.notificationToken))
+  const recipients =
+    await getTeamNotificationRecipients(
+      db,
+      varCase.teamId
+    )
 
   if (!recipients.length) {
     console.log(
-      `Nessun token disponibile per l'esito del VAR ${varCase.eventId}.`
+      `Nessun dispositivo disponibile per l'esito del VAR ${varCase.eventId}.`
     )
+
     return
   }
 
-  const tokens = [
-    ...new Set(
-      recipients.map((user) => user.notificationToken)
-    ),
-  ].slice(0, 500)
+  const tokens = recipients
+    .map(
+      (recipient) =>
+        recipient.token
+    )
+    .slice(0, 500)
 
   const title =
     result === 'approved'
@@ -176,6 +718,7 @@ async function notifyVarResult(varCase, result) {
         result,
         eventId: varCase.eventId || '',
         varCaseId: varCase.eventId || '',
+        teamId: varCase.teamId || '',
         teamKey: varCase.teamKey || '',
         targetName: varCase.targetName || '',
       },
@@ -183,7 +726,7 @@ async function notifyVarResult(varCase, result) {
       webpush: {
         fcmOptions: {
           link:
-            'https://pierpaolo97.github.io/bestemmiometro/',
+            `${getAppBaseUrl()}/`,
         },
 
         notification: {
@@ -194,10 +737,10 @@ async function notifyVarResult(varCase, result) {
             `bestemmiometro-var-result-${varCase.eventId}`,
 
           icon:
-            'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+            `${getAppBaseUrl()}/icons/icon-192.png`,
 
           badge:
-            'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+            `${getAppBaseUrl()}/icons/icon-192.png`,
         },
       },
     })
@@ -206,57 +749,12 @@ async function notifyVarResult(varCase, result) {
     `Notifica esito VAR inviata. Successi: ${response.successCount}, fallimenti: ${response.failureCount}`
   )
 
-  const invalidTokens = []
-
-  response.responses.forEach((item, index) => {
-    if (item.success) return
-
-    const errorCode = item.error?.code
-
-    console.error(
-      `Errore notifica esito VAR token ${index}:`,
-      errorCode,
-      item.error?.message
-    )
-
-    if (
-      errorCode ===
-        'messaging/registration-token-not-registered' ||
-      errorCode ===
-        'messaging/invalid-registration-token'
-    ) {
-      invalidTokens.push(tokens[index])
-    }
-  })
-
-  if (!invalidTokens.length) {
-    return
-  }
-
-  const batch = db.batch()
-
-  recipients
-    .filter((user) =>
-      invalidTokens.includes(user.notificationToken)
-    )
-    .forEach((user) => {
-      const userRef = db
-        .collection('users')
-        .doc(user.id)
-
-      batch.update(userRef, {
-        notificationToken: null,
-        notificationsEnabled: false,
-        updatedAt: new Date(),
-      })
-    })
-
-  await batch.commit()
-
-  console.log(
-    `${invalidTokens.length} token non validi rimossi dopo l'esito del VAR.`
+  await cleanupInvalidNotificationDevices(
+    response,
+    recipients
   )
-}
+
+  }
 
 async function finalizeVarCase(varCaseRef, varCase, result) {
   const db = getFirestore()
@@ -355,40 +853,15 @@ exports.resolveVarOnVote = onDocumentUpdated(
       return
     }
 
-    const votes = Object.values(after.votes || {})
-
-    const approvals = votes.filter(
-      (vote) => vote === 'approve'
-    ).length
-
-    const rejections = votes.filter(
-      (vote) => vote === 'reject'
-    ).length
-
-    const requiredApprovals = after.requiredApprovals || 1
-
-    if (approvals >= requiredApprovals) {
-      await finalizeVarCase(
-        event.data.after.ref,
-        after,
-        'approved'
-      )
-
-      return
-    }
-
-    if (rejections >= requiredApprovals) {
-      await finalizeVarCase(
-        event.data.after.ref,
-        after,
-        'rejected'
-      )
-    }
+    console.log(
+      `Voto aggiornato sul VAR ${event.params.varCaseId}. ` +
+      'Il VAR resterà aperto fino alla scadenza.'
+    )
   }
 )
 
 exports.finalizeExpiredVarCases = onSchedule(
-  'every 1 hours',
+  'every 5 minutes',
   async () => {
     const db = getFirestore()
     const now = new Date()
@@ -429,7 +902,7 @@ exports.finalizeExpiredVarCases = onSchedule(
 exports.notifyNewVar = onDocumentCreated(
   {
     document: 'varCases/{varCaseId}',
-    region: 'us-central1',
+    region: 'europe-west8',
   },
   async (event) => {
     const varCase = event.data?.data()
@@ -440,6 +913,7 @@ exports.notifyNewVar = onDocumentCreated(
     }
 
     const {
+      teamId,
       teamKey,
       challengedById,
       challengedByName,
@@ -449,42 +923,55 @@ exports.notifyNewVar = onDocumentCreated(
       eventId,
     } = varCase
 
-    if (!teamKey) {
-      console.log('teamKey mancante nel VAR.')
+    if (!teamId) {
+      console.log('teamId mancante nel VAR.')
       return
     }
 
     const db = getFirestore()
 
-    const usersSnapshot = await db
-      .collection('users')
-      .where('teamKey', '==', teamKey)
-      .where('notificationsEnabled', '==', true)
-      .get()
+    const challengedUserSnapshot =
+      challengedById
+        ? await db
+            .collection('users')
+            .doc(challengedById)
+            .get()
+        : null
 
-    const recipients = usersSnapshot.docs
-      .map((document) => ({
-        id: document.id,
-        ...document.data(),
-      }))
-      .filter(
-        (user) =>
-          Boolean(user.notificationToken) &&
-          user.id !== varCase.challengedById
+    const excludedAuthUids = []
+
+    if (
+      challengedUserSnapshot?.exists &&
+      challengedUserSnapshot.data()
+        ?.authUid
+    ) {
+      excludedAuthUids.push(
+        challengedUserSnapshot.data()
+          .authUid
+      )
+    }
+
+    const recipients =
+      await getTeamNotificationRecipients(
+        db,
+        teamId,
+        excludedAuthUids
       )
 
-    if (recipients.length === 0) {
+    if (!recipients.length) {
       console.log(
         `Nessun destinatario disponibile per il VAR ${event.params.varCaseId}.`
       )
+
       return
     }
 
-    const tokens = [
-      ...new Set(
-        recipients.map((user) => user.notificationToken)
-      ),
-    ].slice(0, 500)
+    const tokens =
+      recipients.map(
+        (recipient) =>
+          recipient.token
+      )
+
 
     const personName =
       challengedByName ||
@@ -507,12 +994,27 @@ exports.notifyNewVar = onDocumentCreated(
 
       data: {
         type: 'var-opened',
-        varCaseId: event.params.varCaseId,
-        eventId: eventId || '',
-        teamKey,
-        challengedByName: personName,
-        eventDescription: description,
-        challengeReason: reason,
+
+        varCaseId:
+          event.params.varCaseId,
+
+        eventId:
+          eventId || '',
+
+        teamId:
+          teamId || '',
+
+        teamKey:
+          teamKey || '',
+
+        challengedByName:
+          personName,
+
+        eventDescription:
+          description,
+
+        challengeReason:
+          reason,
       },
 
       webpush: {
@@ -520,8 +1022,8 @@ exports.notifyNewVar = onDocumentCreated(
           title: '⚖️ Nuova richiesta VAR',
           body: `${personName} ha contestato: ${description}`,
 
-          icon: 'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
-          badge: 'https://pierpaolo97.github.io/bestemmiometro/icons/icon-192.png',
+          icon: `${getAppBaseUrl()}/icons/icon-192.png`,
+          badge: `${getAppBaseUrl()}/icons/icon-192.png`,
 
           tag: `bestemmiometro-var-${event.params.varCaseId}`,
 
@@ -529,7 +1031,7 @@ exports.notifyNewVar = onDocumentCreated(
         },
 
         fcmOptions: {
-          link: 'https://pierpaolo97.github.io/bestemmiometro/',
+          link: `${getAppBaseUrl()}/`,
         },
       },
     })
@@ -539,49 +1041,1525 @@ exports.notifyNewVar = onDocumentCreated(
       `${response.failureCount} fallite.`
     )
 
-    const invalidTokens = []
 
-    response.responses.forEach((result, index) => {
-      if (result.success) return
+    await cleanupInvalidNotificationDevices(
+      response,
+      recipients
+    )
+  }
+)
 
-      const errorCode = result.error?.code
-
-      console.error(
-        `Errore invio token ${index}:`,
-        errorCode,
-        result.error?.message
+exports.approveAccountLink = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso con Google.'
       )
+    }
 
-      if (
-        errorCode === 'messaging/registration-token-not-registered' ||
-        errorCode === 'messaging/invalid-registration-token'
-      ) {
-        invalidTokens.push(tokens[index])
-      }
-    })
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
 
-    if (invalidTokens.length === 0) return
-
-    const batch = db.batch()
-
-    recipients
-      .filter((user) =>
-        invalidTokens.includes(user.notificationToken)
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
       )
-      .forEach((user) => {
-        batch.update(
-          db.collection('users').doc(user.id),
+    }
+
+    const db = getFirestore()
+
+    const linkRequestRef = db
+      .collection('accountLinkRequests')
+      .doc(requestId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        // 1. Leggiamo prima la richiesta
+        const linkRequestSnapshot =
+          await transaction.get(linkRequestRef)
+
+        if (!linkRequestSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'La richiesta non esiste.'
+          )
+        }
+
+        const linkRequest =
+          linkRequestSnapshot.data()
+
+        if (linkRequest.status !== 'pending') {
+          throw new HttpsError(
+            'failed-precondition',
+            'La richiesta è già stata gestita.'
+          )
+        }
+
+        if (
+          !linkRequest.legacyUserId ||
+          !linkRequest.requestedByUid ||
+          !linkRequest.teamKey
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'La richiesta contiene dati incompleti.'
+          )
+        }
+
+        // 2. Troviamo il reviewer NEL TEAM corretto
+        const reviewer =
+          await getAuthenticatedTeamProfileByKey(
+            transaction,
+            db,
+            request.auth.uid,
+            linkRequest.teamKey
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono approvare.'
+          )
+        }
+
+        if (
+          reviewer.authUid ===
+          linkRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Non puoi approvare la tua richiesta.'
+          )
+        }
+
+        // 3. Profilo storico da collegare
+        const legacyUserRef = db
+          .collection('users')
+          .doc(linkRequest.legacyUserId)
+
+        const legacyUserSnapshot =
+          await transaction.get(legacyUserRef)
+
+        if (!legacyUserSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Il profilo richiesto non esiste.'
+          )
+        }
+
+        const legacyUser =
+          legacyUserSnapshot.data()
+
+        if (!legacyUser.teamId) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Profilo legacy non ancora migrato.'
+          )
+        }
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(legacyUser.teamId)
+          .collection('members')
+          .doc(linkRequest.requestedByUid)
+
+          const teamRef = db
+            .collection('teams')
+            .doc(legacyUser.teamId)
+
+          const teamSnapshot =
+            await transaction.get(teamRef)
+
+          if (!teamSnapshot.exists) {
+            throw new HttpsError(
+              'not-found',
+              'Gruppo non trovato.'
+            )
+          }
+
+          const team =
+            teamSnapshot.data()
+
+        if (
+          legacyUser.teamKey !==
+          linkRequest.teamKey
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Il profilo appartiene a un altro team.'
+          )
+        }
+
+        if (
+          legacyUser.authUid &&
+          legacyUser.authUid !==
+            linkRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Il profilo è già collegato a un altro account.'
+          )
+        }
+
+        /*
+         * Multi-team:
+         * lo stesso Google UID PUÒ esistere in altri gruppi.
+         * Dobbiamo impedire soltanto un secondo profilo
+         * nello STESSO team.
+         */
+        const existingTeamMembershipQuery = db
+          .collection('users')
+          .where(
+            'authUid',
+            '==',
+            linkRequest.requestedByUid
+          )
+          .where(
+            'teamKey',
+            '==',
+            linkRequest.teamKey
+          )
+          .limit(1)
+
+        const existingTeamMembershipSnapshot =
+          await transaction.get(
+            existingTeamMembershipQuery
+          )
+
+        if (
+          !existingTeamMembershipSnapshot.empty &&
+          existingTeamMembershipSnapshot.docs[0].id !==
+            legacyUserRef.id
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Questo account Google è già collegato a un profilo di questo gruppo.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+        transaction.set(
+          teamMemberRef,
           {
-            notificationToken: null,
-            notificationsEnabled: false,
+            membershipId:
+              legacyUserRef.id,
+
+            accessRole:
+              legacyUser.accessRole ||
+              'player',
+
+            accountStatus:
+              'active',
+
+            updatedAt: now,
+          },
+          {
+            merge: true,
           }
         )
-      })
+        transaction.update(legacyUserRef, {
+          authUid:
+            linkRequest.requestedByUid,
 
-    await batch.commit()
+          teamName:
+            team.name ||
+            legacyUser.teamName ||
+            null,
+            
+          email:
+            linkRequest.requestedByEmail ||
+            null,
+
+          photoURL:
+            linkRequest.requestedByPhotoURL ||
+            null,
+
+          accountStatus: 'active',
+          accountLinkedAt: now,
+          updatedAt: now,
+        })
+
+        transaction.update(linkRequestRef, {
+          status: 'approved',
+
+          reviewedAt: now,
+          reviewedByUid:
+            request.auth.uid,
+
+          reviewedByUserId:
+            reviewer.id,
+
+          reviewedByName:
+            reviewer.username || null,
+
+          updatedAt: now,
+        })
+
+        return {
+          legacyUserId:
+            legacyUserRef.id,
+
+          legacyUsername:
+            legacyUser.username || null,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
+  }
+)
+
+exports.rejectAccountLink = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso con Google.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const linkRequestRef = db
+      .collection('accountLinkRequests')
+      .doc(requestId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        // 1. Prima leggiamo la richiesta
+        const linkRequestSnapshot =
+          await transaction.get(linkRequestRef)
+
+        if (!linkRequestSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'La richiesta non esiste.'
+          )
+        }
+
+        const linkRequest =
+          linkRequestSnapshot.data()
+
+        if (linkRequest.status !== 'pending') {
+          throw new HttpsError(
+            'failed-precondition',
+            'La richiesta è già stata gestita.'
+          )
+        }
+
+        if (!linkRequest.teamKey) {
+          throw new HttpsError(
+            'failed-precondition',
+            'teamKey mancante nella richiesta.'
+          )
+        }
+
+        // 2. Reviewer nel team corretto
+        const reviewer =
+          await getAuthenticatedTeamProfileByKey(
+            transaction,
+            db,
+            request.auth.uid,
+            linkRequest.teamKey
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono rifiutare.'
+          )
+        }
+
+        if (
+          request.auth.uid ===
+          linkRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Non puoi gestire la tua richiesta.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(linkRequestRef, {
+          status: 'rejected',
+
+          reviewedAt: now,
+          reviewedByUid:
+            request.auth.uid,
+
+          reviewedByUserId:
+            reviewer.id,
+
+          reviewedByName:
+            reviewer.username || null,
+
+          updatedAt: now,
+        })
+
+        return {
+          legacyUsername:
+            linkRequest.legacyUsername || null,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
+  }
+)
+
+exports.approveJoinRequest = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const joinRequestRef = db
+      .collection('joinRequests')
+      .doc(requestId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const joinRequestSnapshot =
+          await transaction.get(joinRequestRef)
+
+        if (!joinRequestSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Richiesta non trovata.'
+          )
+        }
+
+        const joinRequest =
+          joinRequestSnapshot.data()
+
+        if (joinRequest.status !== 'pending') {
+          throw new HttpsError(
+            'failed-precondition',
+            'Richiesta già gestita.'
+          )
+        }
+
+        if (
+          !joinRequest.teamId ||
+          !joinRequest.requestedByUid
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Richiesta incompleta.'
+          )
+        }
+
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            joinRequest.teamId
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono approvare.'
+          )
+        }
+
+        const existingMembershipQuery = db
+          .collection('users')
+          .where(
+            'authUid',
+            '==',
+            joinRequest.requestedByUid
+          )
+          .where(
+            'teamId',
+            '==',
+            joinRequest.teamId
+          )
+
+        const existingMembershipSnapshot =
+          await transaction.get(
+            existingMembershipQuery
+          )
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        let membershipRef = null
+        let reactivatedMembership = false
+
+        if (!existingMembershipSnapshot.empty) {
+          const memberships =
+            existingMembershipSnapshot.docs.map(
+              (document) => ({
+                id: document.id,
+                ref: document.ref,
+                ...document.data(),
+              })
+            )
+
+          const activeMembership =
+            memberships.find(
+              (membership) =>
+                membership.accountStatus === 'active'
+            )
+
+          if (activeMembership) {
+            throw new HttpsError(
+              'already-exists',
+              'L’utente fa già parte del gruppo.'
+            )
+          }
+
+          const removedMembership =
+            memberships.find(
+              (membership) =>
+                membership.accountStatus === 'removed'
+            )
+
+          if (removedMembership) {
+            membershipRef =
+              removedMembership.ref
+
+            reactivatedMembership = true
+          }
+        }
+
+        if (!membershipRef) {
+          membershipRef =
+            db.collection('users').doc()
+        }
+
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(joinRequest.teamId)
+          .collection('members')
+          .doc(joinRequest.requestedByUid)
+
+        const displayName =
+          joinRequest.requestedByName ||
+          joinRequest.requestedByEmail ||
+          'Giocatore'
+
+        const nameParts =
+          displayName.trim().split(/\s+/)
+
+        const firstName =
+          nameParts[0] || displayName
+
+        const lastName =
+          nameParts.slice(1).join(' ')
+
+        if (reactivatedMembership) {
+          transaction.update(
+            membershipRef,
+            {
+              accountStatus: 'active',
+              accessRole: 'player',
+
+              email:
+                joinRequest.requestedByEmail ||
+                null,
+
+              photoURL:
+                joinRequest.requestedByPhotoURL ||
+                null,
+
+              removedAt: null,
+              removedById: null,
+              removedByName: null,
+              leftAt: null,
+
+              rejoinedAt: now,
+              updatedAt: now,
+            }
+          )
+        } else {
+          transaction.set(
+            membershipRef,
+            {
+              authUid:
+                joinRequest.requestedByUid,
+
+              teamId:
+                joinRequest.teamId,
+
+              teamKey:
+                joinRequest.teamKey,
+
+              teamName:
+                joinRequest.teamName,
+
+              username:
+                firstName,
+
+              firstName,
+              lastName,
+
+              email:
+                joinRequest.requestedByEmail ||
+                null,
+
+              photoURL:
+                joinRequest.requestedByPhotoURL ||
+                null,
+
+              role: 'default',
+              accessRole: 'player',
+              accountStatus: 'active',
+
+              createdAt: now,
+              updatedAt: now,
+            }
+          )
+        }
+
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId:
+              membershipRef.id,
+
+            accessRole:
+              'player',
+
+            accountStatus:
+              'active',
+
+            updatedAt:
+              now,
+          },
+          {
+            merge: true,
+          }
+        )
+
+        transaction.update(
+          joinRequestRef,
+          {
+            status: 'approved',
+            reactivatedMembership,
+
+            membershipId:
+              membershipRef.id,
+
+            reviewedAt:
+              now,
+
+            reviewedByUid:
+              request.auth.uid,
+
+            reviewedByUserId:
+              reviewer.id,
+
+            reviewedByName:
+              reviewer.username || null,
+
+            updatedAt:
+              now,
+          }
+        )
+
+        return {
+          membershipId:
+            membershipRef.id,
+
+          reactivatedMembership,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
+  }
+)
+
+exports.rejectJoinRequest = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    const requestId =
+      typeof request.data?.requestId === 'string'
+        ? request.data.requestId.trim()
+        : ''
+
+    if (!requestId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'requestId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const joinRequestRef = db
+      .collection('joinRequests')
+      .doc(requestId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        // Prima leggiamo la richiesta
+        const snapshot =
+          await transaction.get(
+            joinRequestRef
+          )
+
+        if (!snapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Richiesta non trovata.'
+          )
+        }
+
+        const joinRequest =
+          snapshot.data()
+
+        if (
+          joinRequest.status !== 'pending'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Richiesta già gestita.'
+          )
+        }
+
+        if (!joinRequest.teamId) {
+          throw new HttpsError(
+            'failed-precondition',
+            'teamId mancante nella richiesta.'
+          )
+        }
+
+        // Poi troviamo la membership corretta
+        const reviewer =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            joinRequest.teamId
+          )
+
+        if (
+          reviewer.accessRole !== 'maintainer' &&
+          reviewer.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo owner e maintainer possono rifiutare.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          joinRequestRef,
+          {
+            status: 'rejected',
+
+            reviewedAt: now,
+            reviewedByUid:
+              request.auth.uid,
+
+            reviewedByUserId:
+              reviewer.id,
+
+            reviewedByName:
+              reviewer.username || null,
+
+            updatedAt: now,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+async function getAuthenticatedTeamProfileByKey(
+  transaction,
+  db,
+  authUid,
+  teamKey
+) {
+  const profileQuery = db
+    .collection('users')
+    .where('authUid', '==', authUid)
+    .where('teamKey', '==', teamKey)
+    .where('accountStatus', '==', 'active')
+    .limit(1)
+
+  const profileSnapshot =
+    await transaction.get(profileQuery)
+
+  if (profileSnapshot.empty) {
+    throw new HttpsError(
+      'permission-denied',
+      'Non fai parte di questo gruppo.'
+    )
+  }
+
+  const profileDocument =
+    profileSnapshot.docs[0]
+
+  return {
+    id: profileDocument.id,
+    ref: profileDocument.ref,
+    ...profileDocument.data(),
+  }
+}
+
+exports.deleteTeam = onCall(
+  {
+    region: 'europe-west8',
+    timeoutSeconds: 300,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const confirmation =
+      typeof request.data?.confirmation === 'string'
+        ? request.data.confirmation.trim()
+        : ''
+
+    if (!teamId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'teamId mancante.'
+      )
+    }
+
+    if (confirmation !== 'ELIMINA') {
+      throw new HttpsError(
+        'invalid-argument',
+        'Conferma eliminazione non valida.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const teamRef = db
+      .collection('teams')
+      .doc(teamId)
+
+    const teamSnapshot =
+      await teamRef.get()
+
+    if (!teamSnapshot.exists) {
+      throw new HttpsError(
+        'not-found',
+        'Il gruppo non esiste.'
+      )
+    }
+
+    const team = teamSnapshot.data()
+
+    /*
+     * Cerchiamo la membership dell'utente
+     * proprio in questo gruppo.
+     */
+    const ownerQuery = await db
+      .collection('users')
+      .where('authUid', '==', request.auth.uid)
+      .where('teamId', '==', teamId)
+      .where('accountStatus', '==', 'active')
+      .limit(1)
+      .get()
+
+    if (ownerQuery.empty) {
+      throw new HttpsError(
+        'permission-denied',
+        'Non fai parte di questo gruppo.'
+      )
+    }
+
+    const ownerProfile =
+      ownerQuery.docs[0].data()
+
+    if (ownerProfile.accessRole !== 'owner') {
+      throw new HttpsError(
+        'permission-denied',
+        'Solo l’owner può eliminare il gruppo.'
+      )
+    }
+
+    /*
+     * Ulteriore controllo:
+     * se ownerUid è presente nel documento team,
+     * deve coincidere con chi sta eseguendo
+     * l'operazione.
+     */
+    if (
+      team.ownerUid &&
+      team.ownerUid !== request.auth.uid
+    ) {
+      throw new HttpsError(
+        'permission-denied',
+        'Non sei il proprietario del gruppo.'
+      )
+    }
+
+    const collections = [
+      'events',
+      'varCases',
+      'varUsage',
+      'joinRequests',
+      'users',
+    ]
+
+    let deletedDocuments = 0
+
+    /*
+     * BulkWriter è adatto a molte operazioni
+     * server-side Firestore.
+     */
+    const writer = db.bulkWriter()
+
+    writer.onWriteError((error) => {
+      console.error(
+        'Errore BulkWriter:',
+        error
+      )
+
+      /*
+       * Firebase ritenta già alcune operazioni;
+       * limitiamo eventuali ulteriori retry.
+       */
+      return error.failedAttempts < 3
+    })
+
+    for (const collectionName of collections) {
+      const snapshot = await db
+        .collection(collectionName)
+        .where('teamId', '==', teamId)
+        .get()
+
+      for (const document of snapshot.docs) {
+        writer.delete(document.ref)
+        deletedDocuments += 1
+      }
+    }
+
+    await writer.close()
+
+    /*
+    * Eliminiamo l'indice autorizzazioni del team
+    * insieme a tutta la sottocollection members.
+    */
+    const teamMembersRef = db
+      .collection('teamMembers')
+      .doc(teamId)
+
+    await db.recursiveDelete(
+      teamMembersRef
+    )
+
+    /*
+    * Il team principale viene eliminato per ultimo.
+    */
+    await teamRef.delete()
 
     console.log(
-      `${invalidTokens.length} token non validi disabilitati.`
+      `Team ${teamId} eliminato da ${request.auth.uid}. ` +
+      `${deletedDocuments} documenti associati rimossi.`
     )
+
+    return {
+      success: true,
+      deletedDocuments,
+    }
+  }
+)
+
+exports.leaveTeam = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    if (!teamId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'teamId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    await db.runTransaction(
+      async (transaction) => {
+        const membership =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+        const teamMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(request.auth.uid)
+        if (
+          membership.accessRole === 'owner'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'L’owner deve trasferire la proprietà prima di uscire.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        transaction.update(
+          membership.ref,
+          {
+            accountStatus: 'removed',
+
+            leftAt: now,
+
+            removedAt: now,
+
+            removedById:
+              membership.id,
+
+            removedByName:
+              membership.username || null,
+
+            updatedAt: now,
+          }
+        )
+        transaction.delete(
+          teamMemberRef
+        )
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+exports.transferTeamOwnership = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Devi effettuare l’accesso.'
+      )
+    }
+
+    const teamId =
+      typeof request.data?.teamId === 'string'
+        ? request.data.teamId.trim()
+        : ''
+
+    const targetMembershipId =
+      typeof request.data?.targetMembershipId === 'string'
+        ? request.data.targetMembershipId.trim()
+        : ''
+
+    if (
+      !teamId ||
+      !targetMembershipId
+    ) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Dati mancanti.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const teamRef = db
+      .collection('teams')
+      .doc(teamId)
+
+    const targetRef = db
+      .collection('users')
+      .doc(targetMembershipId)
+
+    await db.runTransaction(
+      async (transaction) => {
+        /*
+         * Tutte le letture prima delle scritture.
+         */
+
+        const currentOwner =
+          await getAuthenticatedTeamProfile(
+            transaction,
+            db,
+            request.auth.uid,
+            teamId
+          )
+
+        if (
+          currentOwner.accessRole !== 'owner'
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Solo l’owner può trasferire la proprietà.'
+          )
+        }
+
+        if (
+          currentOwner.id ===
+          targetMembershipId
+        ) {
+          throw new HttpsError(
+            'invalid-argument',
+            'Sei già owner del gruppo.'
+          )
+        }
+
+        const teamSnapshot =
+          await transaction.get(teamRef)
+
+        if (!teamSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Il gruppo non esiste.'
+          )
+        }
+
+        const targetSnapshot =
+          await transaction.get(targetRef)
+
+        if (!targetSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Il membro selezionato non esiste.'
+          )
+        }
+
+        const target =
+          targetSnapshot.data()
+
+        const currentOwnerMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(request.auth.uid)
+
+        const targetMemberRef = db
+          .collection('teamMembers')
+          .doc(teamId)
+          .collection('members')
+          .doc(target.authUid)
+
+        if (
+          target.teamId !== teamId
+        ) {
+          throw new HttpsError(
+            'permission-denied',
+            'Il membro appartiene a un altro gruppo.'
+          )
+        }
+
+        if (
+          target.accountStatus !== 'active'
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il membro non è attivo.'
+          )
+        }
+
+        if (!target.authUid) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il membro deve avere un account Google collegato.'
+          )
+        }
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        /*
+         * Il vecchio owner diventa maintainer.
+         */
+        transaction.update(
+          currentOwner.ref,
+          {
+            accessRole: 'maintainer',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          targetRef,
+          {
+            accessRole: 'owner',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          currentOwnerMemberRef,
+          {
+            accessRole: 'maintainer',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          targetMemberRef,
+          {
+            accessRole: 'owner',
+            updatedAt: now,
+          }
+        )
+
+        transaction.update(
+          teamRef,
+          {
+            ownerUid:
+              target.authUid,
+
+            updatedAt: now,
+          }
+        )
+      }
+    )
+
+    return {
+      success: true,
+    }
+  }
+)
+
+exports.claimLegacyOwner = onCall(
+  {
+    region: 'europe-west8',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        'unauthenticated',
+        'Accesso richiesto.'
+      )
+    }
+
+    const legacyUserId =
+      typeof request.data?.legacyUserId === 'string'
+        ? request.data.legacyUserId.trim()
+        : ''
+
+    if (!legacyUserId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'legacyUserId mancante.'
+      )
+    }
+
+    const db = getFirestore()
+
+    const legacyUserRef = db
+      .collection('users')
+      .doc(legacyUserId)
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        /*
+         * Prima tutte le letture.
+         */
+        const legacySnapshot =
+          await transaction.get(legacyUserRef)
+
+        if (!legacySnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Profilo legacy non trovato.'
+          )
+        }
+
+        const legacyUser =
+          legacySnapshot.data()
+
+        if (!legacyUser.teamId) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Profilo legacy non migrato.'
+          )
+        }
+
+        if (legacyUser.accessRole !== 'owner') {
+          throw new HttpsError(
+            'permission-denied',
+            'Questo profilo non è l’owner del gruppo.'
+          )
+        }
+
+        if (
+          legacyUser.authUid &&
+          legacyUser.authUid !== request.auth.uid
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Il profilo è già collegato a un altro account.'
+          )
+        }
+
+        const teamRef = db
+          .collection('teams')
+          .doc(legacyUser.teamId)
+
+        const teamSnapshot =
+          await transaction.get(teamRef)
+
+        if (!teamSnapshot.exists) {
+          throw new HttpsError(
+            'not-found',
+            'Gruppo non trovato.'
+          )
+        }
+
+        const team = teamSnapshot.data()
+
+        /*
+         * Il bootstrap è consentito SOLO
+         * finché il team non ha un owner Firebase.
+         */
+        if (team.ownerUid) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Il gruppo ha già un owner collegato.'
+          )
+        }
+
+        /*
+         * Impedisce due membership nello stesso team
+         * per lo stesso account.
+         */
+        const existingQuery = db
+          .collection('users')
+          .where(
+            'authUid',
+            '==',
+            request.auth.uid
+          )
+          .where(
+            'teamId',
+            '==',
+            legacyUser.teamId
+          )
+          .limit(1)
+
+        const existingSnapshot =
+          await transaction.get(
+            existingQuery
+          )
+
+        if (
+          !existingSnapshot.empty &&
+          existingSnapshot.docs[0].id !==
+            legacyUserId
+        ) {
+          throw new HttpsError(
+            'already-exists',
+            'Questo account è già collegato a un altro profilo del gruppo.'
+          )
+        }
+
+        const teamMembersRootRef = db
+          .collection('teamMembers')
+          .doc(legacyUser.teamId)
+
+        const teamMemberRef =
+          teamMembersRootRef
+            .collection('members')
+            .doc(request.auth.uid)
+
+        const now =
+          FieldValue.serverTimestamp()
+
+        /*
+         * Ora le scritture.
+         */
+        transaction.update(
+          legacyUserRef,
+          {
+            teamName:
+              team.name || legacyUser.teamName || null,
+
+            authUid:
+              request.auth.uid,
+
+            email:
+              request.auth.token.email ||
+              null,
+
+            accountStatus:
+              'active',
+
+            accessRole:
+              'owner',
+
+            accountLinkedAt:
+              now,
+
+            updatedAt:
+              now,
+          }
+        )
+
+        transaction.update(
+          teamRef,
+          {
+            ownerUid:
+              request.auth.uid,
+
+            updatedAt:
+              now,
+          }
+        )
+
+        transaction.set(
+          teamMembersRootRef,
+          {
+            teamId:
+              legacyUser.teamId,
+
+            updatedAt:
+              now,
+          },
+          {
+            merge: true,
+          }
+        )
+
+        transaction.set(
+          teamMemberRef,
+          {
+            membershipId:
+              legacyUserId,
+
+            accessRole:
+              'owner',
+
+            accountStatus:
+              'active',
+
+            updatedAt:
+              now,
+          },
+          {
+            merge: true,
+          }
+        )
+
+        return {
+          membershipId:
+            legacyUserId,
+
+          teamId:
+            legacyUser.teamId,
+        }
+      }
+    )
+
+    return {
+      success: true,
+      ...result,
+    }
   }
 )
