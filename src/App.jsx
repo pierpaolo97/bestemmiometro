@@ -607,6 +607,8 @@ export default function App() {
           merge: true,
         }
       )
+      setNotificationsEnabled(true)
+      setShowNotificationModal(false)
       showToast('Notifiche abilitate.', 'success')
     } catch (error) {
       console.error('Errore notifiche:', error)
@@ -893,51 +895,159 @@ export default function App() {
   }, [currentUser])
 
   useEffect(() => {
-    if (!currentUser) return
-
-    // Se Firebase dice che le notifiche sono già attive,
-    // non chiedere più nulla.
-    if (notificationsEnabled === true) {
+    if (
+      !firebaseUser?.uid ||
+      !currentUser?.teamId
+    ) {
+      setNotificationsEnabled(false)
       setShowNotificationModal(false)
       return
     }
 
-    const notificationApiAvailable =
-      typeof window !== 'undefined' &&
-      typeof Notification !== 'undefined' &&
-      'serviceWorker' in navigator
+    let cancelled = false
 
-    if (!notificationApiAvailable) {
-      setShowNotificationModal(false)
-      return
+    async function checkNotificationDevice() {
+      try {
+        const notificationApiAvailable =
+          typeof window !== 'undefined' &&
+          typeof Notification !== 'undefined' &&
+          'serviceWorker' in navigator
+
+        if (!notificationApiAvailable) {
+          if (!cancelled) {
+            setNotificationsEnabled(false)
+            setShowNotificationModal(false)
+          }
+
+          return
+        }
+
+        /*
+        * Su iOS le push web funzionano
+        * solo dalla PWA installata.
+        */
+        const isIOS =
+          /iPad|iPhone|iPod/.test(
+            navigator.userAgent
+          ) ||
+          (
+            navigator.platform === 'MacIntel' &&
+            navigator.maxTouchPoints > 1
+          )
+
+        const isStandalone =
+          window
+            .matchMedia(
+              '(display-mode: standalone)'
+            )
+            .matches ||
+          window.navigator.standalone === true
+
+        const isAndroid =
+          /Android/i.test(
+            navigator.userAgent
+          )
+
+        const canUseNotifications =
+          isAndroid ||
+          !isIOS ||
+          (
+            isIOS &&
+            isStandalone
+          )
+
+        if (!canUseNotifications) {
+          if (!cancelled) {
+            setNotificationsEnabled(false)
+            setShowNotificationModal(false)
+          }
+
+          return
+        }
+
+        /*
+        * Controlliamo il NUOVO schema.
+        * Non currentUser.notificationsEnabled,
+        * perché sui legacy può essere un
+        * valore vecchio e non affidabile.
+        */
+        const devicesQuery = query(
+          collection(
+            db,
+            'notificationDevices'
+          ),
+          where(
+            'authUid',
+            '==',
+            firebaseUser.uid
+          ),
+          where(
+            'enabled',
+            '==',
+            true
+          )
+        )
+
+        const snapshot =
+          await getDocs(
+            devicesQuery
+          )
+
+        if (cancelled) {
+          return
+        }
+
+        const hasActiveDevice =
+          !snapshot.empty
+
+        setNotificationsEnabled(
+          hasActiveDevice
+        )
+
+        /*
+        * Esiste già almeno un device
+        * registrato per questo account:
+        * niente popup.
+        */
+        if (hasActiveDevice) {
+          setShowNotificationModal(false)
+          return
+        }
+
+        /*
+        * Nessun notificationDevice:
+        * è un nuovo utente/device oppure
+        * un profilo legacy appena recuperato.
+        */
+        setShowNotificationModal(true)
+
+      } catch (error) {
+        console.error(
+          'Errore controllo notificationDevices:',
+          error
+        )
+
+        if (!cancelled) {
+          setNotificationsEnabled(false)
+
+          /*
+          * In caso di errore non mostriamo
+          * un popup potenzialmente fuorviante.
+          */
+          setShowNotificationModal(false)
+        }
+      }
     }
 
-    const isIOS =
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    checkNotificationDevice()
 
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      window.navigator.standalone === true
-
-    const isAndroid =
-      /Android/i.test(navigator.userAgent)
-
-    const canAskNotifications =
-      isAndroid || (isIOS && isStandalone)
-
-    if (!canAskNotifications) {
-      setShowNotificationModal(false)
-      return
+    return () => {
+      cancelled = true
     }
-
-    if (Notification.permission !== 'granted') {
-      setShowNotificationModal(true)
-      return
-    }
-
-    setShowNotificationModal(false)
-  }, [currentUser])
+  }, [
+    firebaseUser?.uid,
+    currentUser?.teamId,
+  ])
 
   useEffect(() => {
     if (
