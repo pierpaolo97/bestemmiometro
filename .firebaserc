@@ -1,5 +1,9 @@
 {
   "projects": {
-    "default": "bestemmiometro-dev"
-  }
+    "default": "bestemmiometro-dev",
+    "dev": "bestemmiometro-dev",
+    "prod": "bestemmiometro-3d8aa"
+  },
+  "targets": {},
+  "etags": {}
 }
