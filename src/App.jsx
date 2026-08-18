@@ -5686,7 +5686,7 @@ export default function App() {
               )}
             </div>
 
-            {isMaintainer && historyModal.id !== currentUser.id && (
+            {/* {isMaintainer && historyModal.id !== currentUser.id && (
               <div className="history-footer">
                 <button
                   className="delete-player-button"
@@ -5696,7 +5696,7 @@ export default function App() {
                   Rimuovi giocatore
                 </button>
               </div>
-            )}
+            )} */}
           </div>
         </div>
       )}
