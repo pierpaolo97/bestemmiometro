@@ -369,34 +369,6 @@ export default function App() {
     []
   )
 
-  const backfillTeamMembersCallable =
-  httpsCallable(
-    functions,
-    'backfillTeamMembers'
-  )
-
-  async function runTeamMembersBackfill() {
-    try {
-      const result =
-        await backfillTeamMembersCallable({
-          confirmation:
-            'BACKFILL_TEAM_MEMBERS',
-
-          dryRun: false,
-        })
-
-      console.log(
-        '[BACKFILL RESULT]',
-        result.data
-      )
-    } catch (error) {
-      console.error(
-        '[BACKFILL ERROR]',
-        error
-      )
-    }
-  }
-
   const rejectAccountLinkCallable = useMemo(
     () =>
       httpsCallable(
@@ -646,13 +618,22 @@ export default function App() {
     }
 
     const requestsQuery = query(
-      collection(db, 'accountLinkRequests'),
-      where(
-        'teamKey',
-        '==',
-        currentUser.teamKey
+      collection(
+        db,
+        'accountLinkRequests'
       ),
-      where('status', '==', 'pending')
+
+      where(
+        'teamId',
+        '==',
+        currentUser.teamId
+      ),
+
+      where(
+        'status',
+        '==',
+        'pending'
+      )
     )
 
     const unsubscribe = onSnapshot(
@@ -1679,6 +1660,8 @@ export default function App() {
         * membership è stata rimossa.
         */
         await updateDoc(requestRef, {
+          teamId:
+            joinTeamPreview.id,
           teamName:
             joinTeamPreview.name,
 
@@ -2619,7 +2602,18 @@ export default function App() {
     try {
       const usersQuery = query(
         collection(db, 'users'),
-        where('teamKey', '==', teamKey)
+
+        where(
+          'teamKey',
+          '==',
+          teamKey
+        ),
+
+        where(
+          'authUid',
+          '==',
+          null
+        )
       )
 
       const snapshot = await getDocs(usersQuery)
@@ -2629,7 +2623,6 @@ export default function App() {
           id: document.id,
           ...document.data(),
         }))
-        .filter((user) => !user.authUid)
         .sort((a, b) =>
           (a.username || '').localeCompare(
             b.username || '',
@@ -2700,7 +2693,7 @@ export default function App() {
         teamKey: selectedUser.teamKey,
         legacyUserId: selectedUser.id,
         legacyUsername: selectedUser.username,
-
+        teamId: selectedUser.teamId,
         requestedByUid: firebaseUser.uid,
         requestedByEmail:
           firebaseUser.email || null,
@@ -4809,15 +4802,6 @@ export default function App() {
 
         {activeTab === 'profile' && (
           <section className="page-view profile-page">
-            {isOwner &&
-            <button
-              type="button"
-              onClick={
-                runTeamMembersBackfill
-              }
-            >
-              Test backfill DEV
-            </button>}
             {isMaintainer &&
               pendingAccountLinkRequests.length > 0 && (
                 <section className="panel">

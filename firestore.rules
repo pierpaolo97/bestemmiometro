@@ -2,6 +2,794 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    /*
+     * =========================================================
+     * HELPERS
+     * =========================================================
+     */
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function teamPath(teamId) {
+      return /databases/$(database)/documents/teams/$(teamId);
+    }
+
+    function userPath(userId) {
+      return /databases/$(database)/documents/users/$(userId);
+    }
+
+    function memberPath(teamId) {
+      return /databases/$(database)/documents/teamMembers/$(teamId)/members/$(request.auth.uid);
+    }
+
+    function isTeamMember(teamId) {
+      return signedIn()
+        && teamId != null
+        && exists(memberPath(teamId));
+    }
+
+    function currentMember(teamId) {
+      return get(memberPath(teamId)).data;
+    }
+
+    function myMembershipId(teamId) {
+      return currentMember(teamId).membershipId;
+    }
+
+    function isOwner(teamId) {
+      return isTeamMember(teamId)
+        && currentMember(teamId).accessRole == 'owner';
+    }
+
+    function isMaintainer(teamId) {
+      return isTeamMember(teamId)
+        && (
+          currentMember(teamId).accessRole == 'owner'
+          || currentMember(teamId).accessRole == 'maintainer'
+        );
+    }
+
+    function validSettings(settings) {
+      return settings.keys().hasOnly([
+          'bestemmiaPoints',
+          'superbestemmiaPoints',
+          'blessingMode',
+          'varEnabled',
+          'varAllowance',
+          'varResetPeriod',
+          'varDurationHours'
+        ])
+        && settings.bestemmiaPoints is int
+        && settings.bestemmiaPoints >= 0
+        && settings.superbestemmiaPoints is int
+        && settings.superbestemmiaPoints >= 0
+        && settings.blessingMode is string
+        && settings.varEnabled is bool
+        && settings.varAllowance is int
+        && settings.varAllowance >= 0
+        && settings.varResetPeriod is string
+        && settings.varDurationHours is int
+        && settings.varDurationHours >= 1;
+    }
+
+
+    /*
+     * =========================================================
+     * TEAMS
+     * =========================================================
+     */
+
+    match /teams/{teamId} {
+
+      /*
+       * Serve anche prima dell'ingresso:
+       * l'utente autenticato cerca il gruppo tramite inviteCode.
+       */
+      allow read: if signedIn();
+
+      /*
+       * Creazione gruppo.
+       * Chi crea deve diventare owner.
+       */
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.inviteCode is string
+        && validSettings(request.resource.data.settings);
+
+      /*
+       * Owner e maintainer possono modificare esclusivamente
+       * nome/impostazioni.
+       *
+       * ownerUid, inviteCode e legacyTeamKey non sono
+       * modificabili direttamente dal client.
+       */
+      allow update: if isMaintainer(teamId)
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'settings',
+            'updatedAt'
+          ])
+        && request.resource.data.name is string
+        && validSettings(
+          request.resource.data.settings
+        );
+
+      /*
+       * deleteTeam passa dalla Cloud Function/Admin SDK.
+       */
+      allow delete: if false;
+    }
+
+
+    /*
+     * =========================================================
+     * USERS / MEMBERSHIP STORICHE
+     * =========================================================
+     */
+
+    match /users/{userId} {
+
+      /*
+       * 1. Posso leggere le mie membership.
+       * 2. Un membro può leggere le membership del proprio team.
+       * 3. Utenti autenticati possono vedere profili legacy
+       *    ancora non collegati.
+       *
+       * Per il caso 3 il frontend DEVE usare:
+       * where('authUid', '==', null)
+       */
+      allow read: if signedIn()
+        && (
+          resource.data.authUid == request.auth.uid
+
+          || (
+            resource.data.teamId != null
+            && isTeamMember(
+              resource.data.teamId
+            )
+          )
+
+          || resource.data.authUid == null
+        );
+
+      /*
+       * Creazione diretta consentita solo durante
+       * createTeam(): il creatore sta creando la propria
+       * membership owner.
+       */
+      allow create: if signedIn()
+        && request.resource.data.authUid
+             == request.auth.uid
+        && request.resource.data.accessRole
+             == 'owner'
+        && request.resource.data.accountStatus
+             == 'active'
+        && request.resource.data.teamId != null
+        && getAfter(
+             teamPath(
+               request.resource.data.teamId
+             )
+           ).data.ownerUid
+             == request.auth.uid;
+
+      /*
+       * Cambio ruolo, rimozione, rientro, leaveTeam,
+       * transferOwner e recovery avvengono nelle Functions.
+       */
+      allow update: if false;
+
+      /*
+       * La pulizia dello storico è consentita a
+       * owner/maintainer SOLO per membership già rimosse.
+       */
+      allow delete: if signedIn()
+        && resource.data.teamId != null
+        && isMaintainer(
+          resource.data.teamId
+        )
+        && resource.data.accountStatus
+             == 'removed';
+    }
+
+
+    /*
+     * =========================================================
+     * TEAM MEMBERS
+     *
+     * Indice delle autorizzazioni correnti.
+     * =========================================================
+     */
+
+    match /teamMembers/{teamId} {
+
+      allow read: if isTeamMember(teamId);
+
+      /*
+       * Il documento root viene creato insieme al team.
+       */
+      allow create: if signedIn()
+        && request.resource.data.teamId
+             == teamId
+        && getAfter(
+             teamPath(teamId)
+           ).data.ownerUid
+             == request.auth.uid;
+
+      allow update, delete: if false;
+
+
+      match /members/{memberUid} {
+
+        allow read: if isTeamMember(teamId);
+
+        /*
+         * Unica creazione client-side:
+         * il creatore del team crea il proprio indice owner.
+         *
+         * Tutti gli altri ingressi vengono gestiti
+         * dalle Cloud Functions.
+         */
+        allow create: if signedIn()
+          && memberUid == request.auth.uid
+          && request.resource.data.accessRole
+               == 'owner'
+          && request.resource.data.accountStatus
+               == 'active'
+          && getAfter(
+               teamPath(teamId)
+             ).data.ownerUid
+               == request.auth.uid
+          && getAfter(
+               userPath(
+                 request.resource.data.membershipId
+               )
+             ).data.authUid
+               == request.auth.uid
+          && getAfter(
+               userPath(
+                 request.resource.data.membershipId
+               )
+             ).data.teamId
+               == teamId;
+
+        /*
+         * setMemberRole, removeTeamMember,
+         * approveJoinRequest, leaveTeam,
+         * transferTeamOwnership ecc. usano Admin SDK.
+         */
+        allow update, delete: if false;
+      }
+    }
+
+
+    /*
+     * =========================================================
+     * EVENTS
+     * =========================================================
+     */
+
+    match /events/{eventId} {
+
+      allow read: if isTeamMember(
+        resource.data.teamId
+      );
+
+      /*
+       * Qualsiasi membro può assegnare un evento,
+       * ma createdById deve corrispondere alla sua
+       * membership reale.
+       */
+      allow create: if signedIn()
+        && isTeamMember(
+          request.resource.data.teamId
+        )
+        && request.resource.data.createdById
+             == myMembershipId(
+                  request.resource.data.teamId
+                )
+        && request.resource.data.targetId != null
+        && get(
+             userPath(
+               request.resource.data.targetId
+             )
+           ).data.teamId
+             == request.resource.data.teamId
+        && get(
+             userPath(
+               request.resource.data.targetId
+             )
+           ).data.accountStatus
+             == 'active';
+
+      /*
+       * Aggiornamenti usati dalla benedizione.
+       */
+      allow update: if isTeamMember(
+          resource.data.teamId
+        )
+        && (
+          /*
+           * Apertura VAR sul proprio evento.
+           */
+          (
+            resource.data.targetId
+              == myMembershipId(
+                   resource.data.teamId
+                 )
+
+            && (
+              !('varCaseId' in resource.data)
+              || resource.data.varCaseId == null
+            )
+
+            && request.resource.data.varStatus
+                 == 'open'
+
+            && request.resource.data
+                 .diff(resource.data)
+                 .affectedKeys()
+                 .hasOnly([
+                   'varCaseId',
+                   'varStatus',
+                   'updatedAt'
+                 ])
+          )
+
+          ||
+
+          /*
+           * Consumo di una benedizione.
+           *
+           * Il client può modificare soltanto i campi
+           * operativi della benedizione.
+           */
+          (
+            resource.data.type
+              == 'benedizione'
+
+            && request.resource.data
+                 .diff(resource.data)
+                 .affectedKeys()
+                 .hasOnly([
+                   'consumed',
+                   'consumedByEventId',
+                   'consumedByUserId',
+                   'consumedByUserName',
+                   'updatedAt'
+                 ])
+
+            && (
+              /*
+               * Un membro consuma una benedizione
+               * assegnando una bestemmia.
+               */
+              (
+                resource.data.consumed == false
+                && request.resource.data.consumed
+                     == true
+                && request.resource.data
+                     .consumedByEventId != null
+                && exists(
+                     /databases/$(database)/documents/events/$(request.resource.data.consumedByEventId)
+                   )
+                && get(
+                     /databases/$(database)/documents/events/$(request.resource.data.consumedByEventId)
+                   ).data.teamId
+                     == resource.data.teamId
+                && get(
+                     /databases/$(database)/documents/events/$(request.resource.data.consumedByEventId)
+                   ).data.createdById
+                     == myMembershipId(
+                          resource.data.teamId
+                        )
+                && get(
+                     /databases/$(database)/documents/events/$(request.resource.data.consumedByEventId)
+                   ).data.targetId
+                     == resource.data.targetId
+                && get(
+                     /databases/$(database)/documents/events/$(request.resource.data.consumedByEventId)
+                   ).data.type
+                     == 'bestemmia'
+                && get(
+                     /databases/$(database)/documents/events/$(request.resource.data.consumedByEventId)
+                   ).data.consumedBlessingId
+                     == eventId
+              )
+
+              ||
+
+              /*
+               * Ripristino benedizione dopo cancellazione:
+               * solo owner/maintainer.
+               */
+              (
+                isMaintainer(
+                  resource.data.teamId
+                )
+                && request.resource.data.consumed
+                     == false
+                && request.resource.data.consumedByEventId
+                     == null
+              )
+            )
+          )
+        );
+
+      /*
+       * Eliminazione manuale eventi:
+       * owner e maintainer.
+       */
+      allow delete: if isMaintainer(
+        resource.data.teamId
+      );
+    }
+
+
+    /*
+     * =========================================================
+     * VAR CASES
+     * =========================================================
+     */
+
+      match /varCases/{varCaseId} {
+
+        /*
+        * GET:
+        * varCaseId coincide con eventId.
+        * Se l'evento appartiene a un team di cui sono membro,
+        * posso verificare se il VAR esiste.
+        */
+        allow get: if signedIn()
+          && exists(
+            /databases/$(database)/documents/events/$(varCaseId)
+          )
+          && isTeamMember(
+            get(
+              /databases/$(database)/documents/events/$(varCaseId)
+            ).data.teamId
+          );
+
+        /*
+        * Query della pagina VAR.
+        */
+        allow list: if signedIn()
+          && isTeamMember(
+            resource.data.teamId
+          );
+
+        /*
+        * Il VAR può essere aperto soltanto dal giocatore
+        * che ha ricevuto l'evento.
+        */
+        allow create: if signedIn()
+          && isTeamMember(
+            request.resource.data.teamId
+          )
+          && request.resource.data.challengedById
+              == myMembershipId(
+                    request.resource.data.teamId
+                  )
+          && request.resource.data.targetId
+              == myMembershipId(
+                    request.resource.data.teamId
+                  )
+          && request.resource.data.status
+              == 'open'
+          && request.resource.data.result
+              == null
+          && request.resource.data.votes.size()
+              == 0
+          && request.resource.data.eventId
+              == varCaseId
+          && exists(
+              /databases/$(database)/documents/events/$(request.resource.data.eventId)
+            )
+          && get(
+              /databases/$(database)/documents/events/$(request.resource.data.eventId)
+            ).data.teamId
+              == request.resource.data.teamId
+          && get(
+              /databases/$(database)/documents/events/$(request.resource.data.eventId)
+            ).data.targetId
+              == myMembershipId(
+                    request.resource.data.teamId
+                  )
+          && get(
+              /databases/$(database)/documents/events/$(request.resource.data.eventId)
+            ).data.type
+              != 'benedizione';
+
+        allow update: if signedIn()
+          && isTeamMember(
+            resource.data.teamId
+          )
+          && resource.data.status == 'open'
+          && resource.data.expiresAt > request.time
+          && myMembershipId(
+              resource.data.teamId
+            ) in resource.data.eligibleVoterIds
+
+          && request.resource.data
+              .diff(resource.data)
+              .affectedKeys()
+              .hasOnly([
+                'votes',
+                'updatedAt'
+              ])
+
+          && request.resource.data.votes
+              .diff(resource.data.votes)
+              .affectedKeys()
+              .hasOnly([
+                myMembershipId(
+                  resource.data.teamId
+                )
+              ])
+
+          && (
+            request.resource.data.votes[
+              myMembershipId(
+                resource.data.teamId
+              )
+            ] == 'approve'
+
+            ||
+
+            request.resource.data.votes[
+              myMembershipId(
+                resource.data.teamId
+              )
+            ] == 'reject'
+          );
+
+        allow delete: if false;
+      }
+
+
+    /*
+     * =========================================================
+     * VAR USAGE
+     * =========================================================
+     */
+
+    match /varUsage/{usageId} {
+
+      /*
+      * requestVar() deve poter controllare se uno specifico
+      * usageId esiste prima di crearlo.
+      *
+      * Non concediamo query generiche.
+      */
+      allow get: if signedIn();
+
+      allow list: if signedIn()
+        && isTeamMember(
+          resource.data.teamId
+        );
+
+      allow create: if signedIn()
+        && isTeamMember(
+          request.resource.data.teamId
+        )
+        && request.resource.data.userId
+             == myMembershipId(
+                  request.resource.data.teamId
+                )
+        && request.resource.data.varCaseId != null
+        && getAfter(
+             /databases/$(database)/documents/varCases/$(request.resource.data.varCaseId)
+           ).data.challengedById
+             == myMembershipId(
+                  request.resource.data.teamId
+                );
+
+      allow update, delete: if false;
+    }
+
+
+    /*
+     * =========================================================
+     * JOIN REQUESTS
+     * =========================================================
+     */
+
+      match /joinRequests/{requestId} {
+
+        allow get: if signedIn();
+
+        /*
+        * Owner/maintainer può vedere soltanto
+        * richieste del proprio team.
+        */
+        allow list: if signedIn()
+          && resource.data.teamId != null
+          && isMaintainer(
+            resource.data.teamId
+          );
+
+        allow create: if signedIn()
+
+          && request.resource.data.requestedByUid
+              == request.auth.uid
+
+          && request.resource.data.teamId != null
+
+          && requestId
+              == request.auth.uid
+                  + '__'
+                  + request.resource.data.teamId
+
+          && request.resource.data.status
+              == 'pending'
+
+          && exists(
+              /databases/$(database)/documents/teams/$(request.resource.data.teamId)
+            );
+
+        allow update: if signedIn()
+
+          && resource.data.requestedByUid
+              == request.auth.uid
+
+          && request.resource.data.requestedByUid
+              == request.auth.uid
+
+          && request.resource.data.teamId != null
+
+          && requestId
+              == request.auth.uid
+                  + '__'
+                  + request.resource.data.teamId
+
+          && request.resource.data.status
+              == 'pending'
+
+          && request.resource.data
+              .diff(resource.data)
+              .affectedKeys()
+              .hasOnly([
+                'teamId',
+                'teamName',
+                'teamKey',
+                'requestedByEmail',
+                'requestedByName',
+                'requestedByPhotoURL',
+                'status',
+                'reviewedAt',
+                'reviewedByUid',
+                'reviewedByUserId',
+                'reviewedByName',
+                'requestedAgainAt',
+                'updatedAt'
+              ]);
+
+        allow delete: if false;
+      }
+
+
+    /*
+     * =========================================================
+     * ACCOUNT LINK REQUESTS / LEGACY
+     * =========================================================
+     */
+
+    match /accountLinkRequests/{requestId} {
+
+      /*
+       * Utente proprietario della richiesta oppure
+       * owner/maintainer del team.
+       */
+      allow read: if signedIn()
+        && (
+          resource.data.requestedByUid
+            == request.auth.uid
+
+          || (
+            resource.data.teamId != null
+            && isMaintainer(
+                 resource.data.teamId
+               )
+          )
+        );
+
+      allow create: if signedIn()
+        && request.resource.data.requestedByUid
+             == request.auth.uid
+        && request.resource.data.teamId != null
+        && request.resource.data.legacyUserId != null
+        && request.resource.data.status
+             == 'pending'
+
+        && exists(
+             userPath(
+               request.resource.data.legacyUserId
+             )
+           )
+
+        && get(
+             userPath(
+               request.resource.data.legacyUserId
+             )
+           ).data.teamId
+             == request.resource.data.teamId
+
+        && get(
+             userPath(
+               request.resource.data.legacyUserId
+             )
+           ).data.authUid
+             == null;
+
+      /*
+       * approve/reject passa dalle Functions.
+       */
+      allow update: if false;
+
+      /*
+       * L'utente può annullare o eliminare
+       * la propria richiesta rifiutata.
+       */
+      allow delete: if signedIn()
+        && resource.data.requestedByUid
+             == request.auth.uid;
+    }
+
+
+    /*
+     * =========================================================
+     * NOTIFICATION DEVICES
+     * =========================================================
+     */
+
+    match /notificationDevices/{deviceId} {
+
+      allow read: if signedIn()
+        && resource.data.authUid
+             == request.auth.uid;
+
+      allow create: if signedIn()
+        && request.resource.data.authUid
+             == request.auth.uid
+        && request.resource.data.token
+             is string
+        && request.resource.data.enabled
+             == true;
+
+      allow update: if signedIn()
+        && resource.data.authUid
+             == request.auth.uid
+        && request.resource.data.authUid
+             == request.auth.uid
+        && request.resource.data
+             .diff(resource.data)
+             .affectedKeys()
+             .hasOnly([
+               'token',
+               'platform',
+               'enabled',
+               'createdAt',
+               'updatedAt'
+             ]);
+
+      allow delete: if signedIn()
+        && resource.data.authUid
+             == request.auth.uid;
+    }
+
+
+    /*
+     * =========================================================
+     * DEFAULT DENY
+     * =========================================================
+     */
+
     match /{document=**} {
       allow read, write: if false;
     }
